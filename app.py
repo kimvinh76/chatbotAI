@@ -86,7 +86,7 @@ def call_gemini_api(api_key, text, ma_de, nam_thi):
     genai.configure(api_key=api_key)
     
     model = genai.GenerativeModel(
-        model_name="gemini-flash-latest",
+        model_name="gemini-3.5-flash",
         system_instruction=SYSTEM_PROMPT,
         generation_config=genai.GenerationConfig(
             response_mime_type="application/json",
@@ -103,52 +103,72 @@ def call_gemini_api(api_key, text, ma_de, nam_thi):
     response = model.generate_content(user_prompt)
     return json.loads(response.text)
 
-def parse_answer_key_pdf(api_key, text):
-    genai.configure(api_key=api_key)
+def parse_answer_key_pdf(api_key, text, pdf_file_path=None):
+    # Bộ GDĐT 2025 có format bảng ma trận ngang chuẩn, ta dùng pdfplumber bóc bảng trực tiếp 
+    # thay vì AI để đảm bảo chính xác 100% và không tốn token (tránh lỗi 429).
+    rows_data = []
     
-    SYSTEM_PROMPT_DAPAN = """Bạn là hệ thống bóc tách đáp án thi trắc nghiệm. 
-Trích xuất văn bản từ file Đáp án của Bộ GD&ĐT thành JSON theo cấu trúc quy định. Đặc biệt nếu file là bảng ma trận đáp án cho nhiều mã đề, hãy lặp qua tất cả để bóc tách.
-Quy tắc:
-- ma_de: chuỗi 3 hoặc 4 chữ số (VD: "101", "0503")
-- phan: số nguyên 1, 2, hoặc 3.
-- cau: số nguyên (VD: 1, 2, 3...)
-- y: áp dụng cho Phần 2 là "A", "B", "C", "D". Phần 1 hoặc 3 thì để "".
-- dap_an: Phần 1 ("A", "B", "C", "D"); Phần 2 ("Đúng", "Sai"); Phần 3 (giá trị số)."""
-
-    class AnswerRecord(typing.TypedDict):
-        ma_de: str
-        phan: int
-        cau: int
-        y: str
-        dap_an: str
-
-    class AnswerKeyResponse(typing.TypedDict):
-        danh_sach: list[AnswerRecord]
-
-    model = genai.GenerativeModel(
-        model_name="gemini-flash-latest",
-        system_instruction=SYSTEM_PROMPT_DAPAN,
-        generation_config=genai.GenerationConfig(
-            response_mime_type="application/json",
-            response_schema=AnswerKeyResponse,
-            temperature=0.1
-        )
-    )
-    
-    prompt = f"Trích xuất đáp án từ nội dung:\n\n{text}"
-    response = model.generate_content(prompt)
-    data = json.loads(response.text)
-    
-    rows = []
-    for item in data.get("danh_sach", []):
-        rows.append({
-            "Mã Đề": str(item.get("ma_de", "")).strip(),
-            "Phần": item.get("phan"),
-            "Câu": item.get("cau"),
-            "Ý": item.get("y", ""),
-            "Đáp Án": str(item.get("dap_an", "")).strip()
-        })
-    return pd.DataFrame(rows)
+    # Do streamplit file_uploader trả về file-like object, ta có thể đưa thẳng vào pdfplumber
+    with pdfplumber.open(pdf_file_path) as pdf:
+        for page in pdf.pages:
+            tables = page.extract_tables()
+            for table in tables:
+                if not table:
+                    continue
+                header = table[0]
+                valid_headers = [str(x).strip() for x in header if x and str(x).strip() != ""]
+                if not valid_headers or ("Câu" not in valid_headers[0]):
+                    continue
+                
+                ma_de_list = valid_headers[1:]
+                
+                for row in table[1:]:
+                    if not row or not row[0]:
+                        continue
+                    cau_str = str(row[0]).strip()
+                    if not cau_str.isdigit():
+                        continue
+                    cau_idx = int(cau_str)
+                    
+                    answers = [str(x).strip() for x in row[1:] if x and str(x).strip() != ""]
+                    
+                    for i, dap_an in enumerate(answers):
+                        if i >= len(ma_de_list):
+                            break
+                        ma_de = ma_de_list[i]
+                        
+                        # Chuẩn hóa cấu trúc theo chuẩn Bộ GD&ĐT 2025
+                        if 1 <= cau_idx <= 24:
+                            rows_data.append({
+                                "Mã Đề": ma_de,
+                                "Phần": 1,
+                                "Câu": cau_idx,
+                                "Ý": "",
+                                "Đáp Án": dap_an
+                            })
+                        elif 25 <= cau_idx <= 28:
+                            parts = [x.strip() for x in dap_an.split(',')]
+                            y_labels = ['A', 'B', 'C', 'D']
+                            for j, val in enumerate(parts):
+                                if j < 4:
+                                    final_val = "Đúng" if val.upper() == 'D' else "Sai" if val.upper() == 'S' else val
+                                    rows_data.append({
+                                        "Mã Đề": ma_de,
+                                        "Phần": 2,
+                                        "Câu": cau_idx - 24, # 25->1, 26->2...
+                                        "Ý": y_labels[j],
+                                        "Đáp Án": final_val
+                                    })
+                        elif cau_idx >= 29:
+                            rows_data.append({
+                                "Mã Đề": ma_de,
+                                "Phần": 3,
+                                "Câu": cau_idx - 28, # 29->1, 30->2
+                                "Ý": "",
+                                "Đáp Án": dap_an
+                            })
+                            
+    return pd.DataFrame(rows_data)
 
 def save_to_mongodb(mongo_uri, data, ma_de, nam_thi):
     try:
@@ -300,7 +320,7 @@ def main():
             elif answer_file.name.endswith('.pdf'):
                 status_text.info("Đang dùng AI Gemini để tự động bóc tách và chuẩn hóa file PDF Đáp án Bộ GD&ĐT...")
                 answer_text = extract_text_from_pdf(answer_file)
-                df_answers = parse_answer_key_pdf(gemini_api_key, answer_text)
+                df_answers = parse_answer_key_pdf(gemini_api_key, answer_text, answer_file)
                 with st.expander("Bảng Đáp án chuẩn (Đã chuẩn hóa bằng AI)"):
                     st.dataframe(df_answers)
 
@@ -361,10 +381,10 @@ def main():
                     with st.expander(f"Dữ liệu JSON - Đề {current_ma_de}"):
                         st.json(ai_result)
 
-                # Delay 4 giây giữa các đề để tránh bị Google block (Rate Limit API Free)
+                # Delay 15 giây giữa các đề để tránh bị Google block (Rate Limit API Free của bản preview là 5 requests/min)
                 if idx < total_files - 1:
-                    status_text.info(f"Đang nghỉ 4s trước khi xử lý đề tiếp theo để chống quá tải (Rate Limit)...")
-                    time.sleep(4)
+                    status_text.info(f"Đang nghỉ 15s trước khi xử lý đề tiếp theo để chống quá tải (Rate Limit)...")
+                    time.sleep(15)
                 
                 progress_bar.progress((idx + 1) / total_files)
                 
