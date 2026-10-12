@@ -1,0 +1,789 @@
+"""
+=============================================================================
+MODULE: core/ai_grader.py
+CHỨC NĂNG:
+- Định nghĩa System Prompt chuẩn chuyên gia Tin học THPT Bộ GD&ĐT.
+- Định nghĩa Schema đầu ra JSON (TypedDict) cho Phần I và Phần II.
+- Bộ phân tích JSON tự phục hồi (robust_exam_json_parser).
+- Chiến lược giải đề 2 Pha (Divide-and-Conquer) chuẩn hóa cho mọi mô hình (cả Flash và Pro):
+  + Pha 1: 24 câu trắc nghiệm Phần I + trích xuất mã đề, năm thi.
+  + Pha 2: 6 câu Đúng/Sai Phần II thuần túy (dồn 100% suy luận logic).
+  + Pha 3: Bổ sung lời giải thích lý thuyết ngắn gọn bằng Text thuần siêu nhẹ.
+- Bóc tách file PDF bảng ma trận đáp án gốc của Bộ GD&ĐT (parse_answer_key_pdf, parse_full_answer_key_pdf).
+=============================================================================
+"""
+
+import json
+import re
+import time
+import typing_extensions as typing
+import pandas as pd
+import google.generativeai as genai
+from core.excel_utils import normalize_ma_de
+
+
+# --- SYSTEM PROMPT ---
+SYSTEM_PROMPT = """Bạn là chuyên gia giáo dục môn Tin học THPT. Nhiệm vụ của bạn là giải chính xác toàn bộ các câu hỏi trong đề thi Tốt nghiệp THPT môn Tin học chuẩn Bộ GD&ĐT.
+
+CẤU TRÚC ĐỀ THI TIN HỌC:
+1. PHẦN I (Câu 1 đến 24): Trắc nghiệm 4 phương án, chọn 1 đáp án đúng (A, B, C hoặc D). Kèm lời giải thích súc tích (1-2 câu, dưới 25 từ) nêu rõ căn cứ lý thuyết/cú pháp chọn đáp án.
+2. PHẦN II (Gồm 6 câu hỏi Đúng/Sai, mỗi câu có 4 ý a, b, c, d):
+   - A. Phần chung (cho tất cả thí sinh):
+     + Câu 1: ý a, b, c, d (Đánh giá 'Đúng' hoặc 'Sai', kèm giải thích ngắn gọn dưới 25 từ cho từng ý)
+     + Câu 2: ý a, b, c, d (Đánh giá 'Đúng' hoặc 'Sai', kèm giải thích ngắn gọn dưới 25 từ cho từng ý)
+   - B. Phần riêng:
+     + B1. Khoa học máy tính:
+       * Câu 3: ý a, b, c, d (Đánh giá 'Đúng' hoặc 'Sai', kèm giải thích ngắn gọn dưới 25 từ cho từng ý)
+       * Câu 4: ý a, b, c, d (Đánh giá 'Đúng' hoặc 'Sai', kèm giải thích ngắn gọn dưới 25 từ cho từng ý)
+     + B2. Tin học ứng dụng:
+       * Câu 5: ý a, b, c, d (Đánh giá 'Đúng' hoặc 'Sai', kèm giải thích ngắn gọn dưới 25 từ cho từng ý)
+       * Câu 6: ý a, b, c, d (Đánh giá 'Đúng' hoặc 'Sai', kèm giải thích ngắn gọn dưới 25 từ cho từng ý)
+*(Lưu ý: Môn Tin học KHÔNG CÓ Phần III).*
+
+QUY TẮC BẮT BUỘC:
+- Hãy giải đầy đủ cả 24 câu Phần I và toàn bộ 6 câu Phần II (gồm cả Câu 1, 2 chung và Câu 3, 4 KHMT, Câu 5, 6 THUD).
+- Phần I: dap_an chỉ là 1 ký tự duy nhất ('A', 'B', 'C' hoặc 'D'). giai_thich chứa lời giải thích ngắn gọn dưới 25 từ.
+- Phần II: Các trường y_a, y_b, y_c, y_d BẮT BUỘC CHỈ CHỨA DUY NHẤT 1 từ là 'Đúng' hoặc 'Sai' (TUYỆT ĐỐI KHÔNG mở ngoặc, không ghi kèm lý do vào trường này). Toàn bộ lời giải thích BẮT BUỘC phải điền riêng vào các trường giai_thich_a, giai_thich_b, giai_thich_c, giai_thich_d (dưới 25 từ mỗi ý, TUYỆT ĐỐI KHÔNG ĐỂ RỖNG).
+- Trả về JSON thuần tuân thủ đúng Schema. Lời giải thích phải súc tích, ngắn gọn, chuẩn xác kiến thức Tin học, không viết dông dài để tối ưu tốc độ xử lý."""
+
+
+# --- SCHEMA JSON ĐẦU RA (TYPEDDICT) ---
+# --- SCHEMA JSON ĐẦU RA (TYPEDDICT CHUẨN HÓA TIẾNG VIỆT KHÔNG DẤU, ĐẦY ĐỦ Ý NGHĨA) ---
+class CauHoiPhan1(typing.TypedDict, total=False):
+    cau_hoi: int
+    dap_an: str
+    giai_thich: str
+
+class CauHoiPhan2(typing.TypedDict, total=False):
+    cau_hoi: int
+    y_a: str
+    y_b: str
+    y_c: str
+    y_d: str
+    giai_thich_a: str
+    giai_thich_b: str
+    giai_thich_c: str
+    giai_thich_d: str
+
+class BaiGiaiDeThi(typing.TypedDict, total=False):
+    nam_thi: int
+    ma_de: str
+    phan_1: list[CauHoiPhan1]
+    phan_2: list[CauHoiPhan2]
+
+# Wrapper chia pha giải đề cho Flash (kế thừa cấu trúc câu hỏi chuẩn)
+class BaiGiaiPhan1(typing.TypedDict, total=False):
+    nam_thi: int
+    ma_de: str
+    phan_1: list[CauHoiPhan1]
+
+class BaiGiaiPhan2(typing.TypedDict, total=False):
+    phan_2: list[CauHoiPhan2]
+
+# Bí danh tương thích ngược
+Phan1 = CauHoiPhan1
+Phan2CauHoi = CauHoiPhan2
+DeThiResponse = BaiGiaiDeThi
+Phan1OnlyResponse = BaiGiaiPhan1
+Phan2OnlyResponse = BaiGiaiPhan2
+
+
+
+def robust_exam_json_parser(resp_text):
+    """
+    Phân tích JSON bài giải đề thi với cơ chế tự phục hồi bằng Regex nếu chuỗi JSON bị vỡ hoặc dính markdown code blocks.
+    """
+    resp_text = re.sub(r'^```(?:json)?\s*', '', resp_text.strip(), flags=re.MULTILINE)
+    resp_text = re.sub(r'\s*```$', '', resp_text, flags=re.MULTILINE)
+    resp_text = re.sub(r'//.*', '', resp_text)
+    resp_text = re.sub(r'/\*.*?\*/', '', resp_text, flags=re.DOTALL)
+    resp_text = re.sub(r',\s*([\]}])', r'\1', resp_text)
+    
+    try:
+        return json.loads(resp_text.strip(), strict=False)
+    except Exception as e:
+        # Regex phục hồi linh hoạt nếu JSON bị dính ký tự lạ
+        phan_1 = []
+        for m in re.finditer(r'\{[^{}]*?"cau_hoi"\s*:\s*(\d+)[^{}]*?"dap_an"\s*:\s*"([A-Da-d])"(?:[^{}]*?"giai_thich"\s*:\s*"([^"]*)")?[^{}]*?\}', resp_text):
+            phan_1.append({
+                "cau_hoi": int(m.group(1)),
+                "dap_an": m.group(2).upper(),
+                "giai_thich": m.group(3).strip() if m.group(3) else ""
+            })
+            
+        phan_2 = []
+        for m in re.finditer(
+            r'\{[^{}]*?"cau_hoi"\s*:\s*(\d+)[^{}]*?"y_a"\s*:\s*"([^"]+)"[^{}]*?"y_b"\s*:\s*"([^"]+)"[^{}]*?"y_c"\s*:\s*"([^"]+)"[^{}]*?"y_d"\s*:\s*"([^"]+)"[^{}]*?\}',
+            resp_text, re.DOTALL
+        ):
+            m_text = m.group(0)
+            ga = re.search(r'"giai_thich_a"\s*:\s*"([^"]*)"', m_text)
+            gb = re.search(r'"giai_thich_b"\s*:\s*"([^"]*)"', m_text)
+            gc = re.search(r'"giai_thich_c"\s*:\s*"([^"]*)"', m_text)
+            gd = re.search(r'"giai_thich_d"\s*:\s*"([^"]*)"', m_text)
+            phan_2.append({
+                "cau_hoi": int(m.group(1)),
+                "y_a": m.group(2).strip(),
+                "y_b": m.group(3).strip(),
+                "y_c": m.group(4).strip(),
+                "y_d": m.group(5).strip(),
+                "giai_thich_a": ga.group(1).strip() if ga else "",
+                "giai_thich_b": gb.group(1).strip() if gb else "",
+                "giai_thich_c": gc.group(1).strip() if gc else "",
+                "giai_thich_d": gd.group(1).strip() if gd else ""
+            })
+            
+        res = {"phan_1": phan_1, "phan_2": phan_2}
+        m_y = re.search(r'"nam_thi"\s*:\s*(\d{4})', resp_text)
+        if m_y:
+            res["nam_thi"] = int(m_y.group(1))
+        m_c = re.search(r'"ma_de"\s*:\s*"([^"]+)"', resp_text)
+        if m_c:
+            res["ma_de"] = str(m_c.group(1))
+            
+        if phan_1 or phan_2:
+            return res
+        raise e
+
+
+# --- CHẨN ĐOÁN TOKEN: ghi lại mỗi lượt gọi AI (lý do dừng + số token vào/ra/suy nghĩ) ---
+_USAGE_LOG = []
+
+
+def _record(tag, resp):
+    """Ghi finish_reason (STOP = bình thường, MAX_TOKENS = bị cắt cụt) và usage_metadata của 1 lượt gọi."""
+    if resp is None:
+        return
+    entry = {"luot": tag}
+    try:
+        fr = resp.candidates[0].finish_reason
+        entry["finish"] = getattr(fr, "name", str(fr))
+    except Exception:
+        entry["finish"] = "?"
+    try:
+        u = resp.usage_metadata
+        entry["token_vao"] = getattr(u, "prompt_token_count", 0)
+        entry["token_ra"] = getattr(u, "candidates_token_count", 0)
+        entry["token_nghi"] = getattr(u, "thoughts_token_count", 0) or 0
+    except Exception:
+        pass
+    _USAGE_LOG.append(entry)
+
+
+def _is_max_tokens(resp):
+    """True nếu AI dừng vì hết token (JSON bị cắt cụt)."""
+    try:
+        fr = resp.candidates[0].finish_reason
+        return getattr(fr, "name", str(fr)) == "MAX_TOKENS" or str(fr).endswith("MAX_TOKENS") or str(fr) == "2"
+    except Exception:
+        return False
+
+
+def _generate_json(model_name, schema, contents, tag, temperature=0.1, token_steps=(8192, 24576)):
+    """Gọi AI và parse JSON. Nếu JSON lỗi/bị cắt (hết token, thường do 'suy nghĩ' chiếm hết), tự thử lại
+    với mức trần token lớn hơn. Chỉ tốn thêm tiền khi thực sự cần thử lại."""
+    last_err, fallback = None, None
+    for i, mt in enumerate(token_steps):
+        model = genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=SYSTEM_PROMPT,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=schema,
+                temperature=temperature,
+                max_output_tokens=mt
+            )
+        )
+        try:
+            resp = model.generate_content(contents, request_options={"timeout": 120})
+            _record(f"{tag} [trần {mt}]", resp)
+            truncated = _is_max_tokens(resp)
+            parsed = robust_exam_json_parser(resp.text)
+            if truncated and i < len(token_steps) - 1:
+                fallback = parsed  # giữ bản dở, thử lại với trần cao hơn
+                continue
+            return parsed
+        except Exception as e:
+            last_err = e
+            time.sleep(1.5)
+    if fallback is not None:
+        return fallback
+    raise RuntimeError(f"{tag}: AI trả JSON lỗi/bị cắt ({last_err}). Chẩn đoán: {_USAGE_LOG}")
+
+
+def enrich_p2_explanations(api_key, phan_2_items, text="", model_name="gemini-3.8-flash"):
+    """
+    Tối ưu hóa Token & Tách biệt pha suy luận:
+    Sau khi Flash đã giải xong Đúng/Sai Phần II, gọi Flash bằng PROMPT TEXT THUẦN (KHÔNG gửi PDF)
+    để viết 1 câu giải thích lý thuyết ngắn gọn (dưới 15 từ) cho mỗi ý.
+    Token vào siêu nhẹ (< 200 token), không bao giờ bị nghẽn hay ảo giác.
+    """
+    if not phan_2_items:
+        return phan_2_items
+
+    summary_lines = []
+    for it in phan_2_items:
+        c = it.get("cau_hoi")
+        summary_lines.append(f"Câu {c}: ý a={it.get('y_a')}, ý b={it.get('y_b')}, ý c={it.get('y_c')}, ý d={it.get('y_d')}")
+
+    prompt = f"""Dưới đây là đáp án ĐÚNG/SAI của 6 câu hỏi Phần II môn Tin học THPT:
+{chr(10).join(summary_lines)}
+
+YÊU CẦU:
+Hãy viết 1 câu giải thích lý thuyết ngắn gọn (dưới 15 từ) cho từng ý a, b, c, d của mỗi câu trên để nêu rõ căn cứ kiến thức.
+Trả về JSON tuân thủ đúng Schema BaiGiaiPhan2 (điền vào các trường giai_thich_a, giai_thich_b, giai_thich_c, giai_thich_d)."""
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(
+            model_name=model_name,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=BaiGiaiPhan2,
+                temperature=0.1,
+                max_output_tokens=4096
+            )
+        )
+        resp = model.generate_content(prompt, request_options={"timeout": 60})
+        _record("Giải thích ngắn P2 (Text thuần)", resp)
+        parsed = robust_exam_json_parser(resp.text)
+        exp_map = {it.get("cau_hoi"): it for it in parsed.get("phan_2", []) if isinstance(it, dict)}
+
+        for it in phan_2_items:
+            c = it.get("cau_hoi")
+            exp_it = exp_map.get(c, {})
+            for k in "abcd":
+                exp_val = str(exp_it.get(f"giai_thich_{k}", "")).strip()
+                if exp_val and len(exp_val) > 3:
+                    it[f"giai_thich_{k}"] = exp_val
+                elif not it.get(f"giai_thich_{k}"):
+                    val_yn = str(it.get(f"y_{k}", "Đúng")).strip()
+                    it[f"giai_thich_{k}"] = f"Khẳng định này là {val_yn.lower()} theo kiến thức Tin học chuẩn."
+    except Exception:
+        for it in phan_2_items:
+            for k in "abcd":
+                if not it.get(f"giai_thich_{k}"):
+                    val_yn = str(it.get(f"y_{k}", "Đúng")).strip()
+                    it[f"giai_thich_{k}"] = f"Khẳng định này là {val_yn.lower()} theo kiến thức Tin học chuẩn."
+
+    return phan_2_items
+
+
+def _call_gemini_api_base(api_key, text, ma_de, nam_thi="2025", pdf_bytes=None, model_name="gemini-3.8-flash"):
+    """
+    Gửi nội dung đề thi sang Gemini để giải đề tự động và trả về cấu trúc JSON đầy đủ 48 câu/ý.
+    Áp dụng chiến lược 2 Pha (Divide-and-Conquer) chuẩn hóa cho mọi mô hình (cả Flash và Pro):
+      + Pha 1: Giải duy nhất Phần I (24 câu) kèm giải thích ngắn, trích xuất năm thi, mã đề.
+      + Pha 2: Giải duy nhất Phần II (6 câu Đúng/Sai thuần túy), dồn 100% năng lực suy luận.
+      + Pha 3: Bổ sung lời giải thích lý thuyết ngắn gọn cho Phần II bằng Text thuần siêu nhẹ.
+    """
+    genai.configure(api_key=api_key)
+    tag_prefix = "Pro" if "pro" in model_name.lower() else "Flash"
+
+    # Pha 1: Giải duy nhất Phần I (24 câu trắc nghiệm) + bóc tách mã đề, năm thi
+    m1 = genai.GenerativeModel(
+        model_name=model_name,
+        system_instruction=SYSTEM_PROMPT,
+        generation_config=genai.GenerationConfig(
+            response_mime_type="application/json",
+            response_schema=BaiGiaiPhan1,
+            temperature=0.1,
+            max_output_tokens=8192
+        )
+    )
+    c1 = []
+    if pdf_bytes:
+        c1.append({"mime_type": "application/pdf", "data": pdf_bytes})
+        prompt_p1 = f"""Tài liệu PDF đính kèm là ĐỀ THI gồm 4 TRANG (Mã dự kiến: {ma_de}).
+YÊU CẦU:
+1. Đọc kỹ phần đầu trang 1 để xác định chính xác NĂM THI (vd: 2025 hoặc 2026) và MÃ ĐỀ THI.
+2. Giải DUY NHẤT PHẦN I gồm ĐẦY ĐỦ TOÀN BỘ 24 CÂU TRẮC NGHIỆM (từ Câu 1 đến Câu 24, trải dài qua trang 1, 2, 3).
+BẮT BUỘC giải đủ cả 24 câu, dap_an chỉ là 1 ký tự A, B, C hoặc D. Lời giải thích súc tích dưới 20 từ mỗi câu."""
+    else:
+        prompt_p1 = f"""Đọc kỹ tiêu đề để xác định NĂM THI và MÃ ĐỀ THI (dự kiến: {ma_de}).
+Hãy giải DUY NHẤT PHẦN I gồm TOÀN BỘ 24 CÂU TRẮC NGHIỆM (từ Câu 1 đến 24).
+Lời giải thích súc tích dưới 20 từ mỗi câu:\n\n--- NỘI DUNG ĐỀ THI ---\n{text}"""
+    c1.append(prompt_p1)
+    r1 = None
+    _record(f"{tag_prefix} Pha 1 (24 câu P1)", r1)
+    parsed_p1 = _generate_json(model_name, BaiGiaiPhan1, c1, f"{tag_prefix} Pha 1 (24 câu P1)")
+    
+    # Khoảng nghỉ an toàn chống vượt ngưỡng RPM
+    time.sleep(1.2)
+
+    # Pha 2: Giải duy nhất Phần II (6 câu Đúng/Sai thuần túy, dồn 100% suy luận không bị phân tâm viết văn)
+    c2 = []
+    if pdf_bytes:
+        c2.append({"mime_type": "application/pdf", "data": pdf_bytes})
+        prompt_p2 = f"""Tài liệu PDF đính kèm là ĐỀ THI gồm 4 TRANG (Mã dự kiến: {ma_de}).
+HÃY ĐỌC KỸ TRANG 3 VÀ TRANG 4 ĐỂ GIẢI 6 CÂU HỎI CỦA PHẦN II (ĐÚNG/SAI):
+- Câu 1, 2: Phần chung (ở cuối trang 3 và đầu trang 4).
+- Câu 3, 4: Phần riêng Khoa học máy tính (ở trang 4).
+- Câu 5, 6: Phần riêng Tin học ứng dụng (ở trang 4).
+YÊU CẦU BẮT BUỘC:
+1. Đánh giá 'Đúng' hoặc 'Sai' cho từng ý a, b, c, d của cả 6 câu (đánh số cau_hoi từ 1 đến 6).
+2. TUYỆT ĐỐI KHÔNG GIẢI THÍCH, KHÔNG VIẾT GÌ KHÁC ngoài 'Đúng' hoặc 'Sai' vào y_a, y_b, y_c, y_d.
+Trả về JSON tuân thủ đúng Schema BaiGiaiPhan2."""
+    else:
+        prompt_p2 = f"""Hãy giải TOÀN BỘ 6 CÂU HỎI CỦA PHẦN II (từ câu 1 đến 6, mỗi câu đủ 4 ý a, b, c, d) từ đề thi dưới đây.
+Đánh giá 'Đúng' hoặc 'Sai' cho từng ý. TUYỆT ĐỐI KHÔNG GIẢI THÍCH:
+\n--- NỘI DUNG ĐỀ THI ---\n{text}"""
+    c2.append(prompt_p2)
+    r2 = None
+    _record(f"{tag_prefix} Pha 2 (6 câu P2 Đúng/Sai)", r2)
+    parsed_p2 = _generate_json(model_name, BaiGiaiPhan2, c2, f"{tag_prefix} Pha 2 (6 câu P2 Đúng/Sai)")
+    
+    # Pha 3: Bổ sung giải thích ngắn gọn bằng Text thuần sau khi đã có đủ Đúng/Sai (cực nhanh, không tốn token PDF)
+    p2_list = parsed_p2.get("phan_2", []) if isinstance(parsed_p2, dict) else []
+    if p2_list:
+        parsed_p2["phan_2"] = enrich_p2_explanations(api_key, p2_list, text=text, model_name=model_name)
+
+    # Ghép kết quả hoàn chỉnh
+    return {
+        "nam_thi": parsed_p1.get("nam_thi") or int(nam_thi),
+        "ma_de": parsed_p1.get("ma_de") or str(ma_de),
+        "phan_1": parsed_p1.get("phan_1", []),
+        "phan_2": parsed_p2.get("phan_2", [])
+    }
+
+
+# =============================================================================
+# LỚP "VÁ CÂU THIẾU" (GAP-FILL) - CHẶN TÌNH TRẠNG AI BỎ SÓT CÂU / BỎ CẢ PHẦN II
+# Sau khi AI giải xong, kiểm đếm chính xác câu/ý nào thiếu (hoặc thiếu giải thích)
+# rồi CHỈ hỏi lại đúng các câu đó (ngắn, rẻ, tập trung) - tối đa 3 vòng.
+# =============================================================================
+def _valid_yn(v):
+    s = str(v).strip().upper()
+    return s.startswith(("ĐÚNG", "DUNG", "SAI", "TRUE", "FALSE")) or s in ("Đ", "D", "S")
+
+
+def _p2_score(it):
+    """Điểm đầy đủ của 1 câu Phần II: tối đa 4 = 4 ý Đúng/Sai hợp lệ (không ép giải thích ở bước này)."""
+    if not isinstance(it, dict):
+        return 0
+    return sum(_valid_yn(it.get(f"y_{k}", "")) for k in "abcd")
+
+
+def _norm_p1(items):
+    """Chuẩn hóa Phần I thành {số câu: item}; bỏ câu sai số / đáp án không phải A-D / trùng lặp."""
+    out = {}
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        try:
+            c = int(it.get("cau_hoi"))
+        except Exception:
+            continue
+        m = re.match(r'^\s*([A-Da-d])\b', str(it.get("dap_an", "")))
+        if 1 <= c <= 24 and m and c not in out:
+            it = dict(it)
+            it["dap_an"] = m.group(1).upper()
+            out[c] = it
+    return out
+
+
+def _norm_p2(items):
+    """Chuẩn hóa Phần II thành {số câu 1..6: item}. Nếu AI trả đúng 6 câu nhưng đánh số lặp (1,2,1,2,..) thì đánh lại 1..6."""
+    items = [it for it in (items or []) if isinstance(it, dict)]
+    nums = []
+    for it in items:
+        try:
+            nums.append(int(it.get("cau_hoi")))
+        except Exception:
+            nums.append(None)
+    out = {}
+    if len(items) == 6 and sorted(n for n in nums if n) != [1, 2, 3, 4, 5, 6]:
+        for i, it in enumerate(items):
+            it = dict(it)
+            it["cau_hoi"] = i + 1
+            out[i + 1] = it
+        return out
+    for it, c in zip(items, nums):
+        if c and 1 <= c <= 6 and (c not in out or _p2_score(it) > _p2_score(out[c])):
+            out[c] = it
+    return out
+
+
+def _ask_subset(model_name, schema, prompt, text, pdf_bytes, temperature):
+    """Gọi AI cho 1 tập con câu hỏi (prompt ngắn, tập trung)."""
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        system_instruction=SYSTEM_PROMPT,
+        generation_config=genai.GenerationConfig(
+            response_mime_type="application/json",
+            response_schema=schema,
+            temperature=temperature,
+            max_output_tokens=8192
+        )
+    )
+    contents = []
+    if pdf_bytes:
+        contents.append({"mime_type": "application/pdf", "data": pdf_bytes})
+    else:
+        prompt += f"\n\n--- NỘI DUNG ĐỀ THI ---\n{text}"
+    contents.append(prompt)
+    resp = None
+    _record("Vá câu thiếu", resp)
+    return _generate_json(model_name, schema, contents, "Vá câu thiếu", temperature)
+
+
+def fill_missing_answers(api_key, result, text, pdf_bytes, model_name, max_rounds=2):
+    """Phát hiện câu/ý thiếu, hỏi lại riêng các câu đó (chỉ Đúng/Sai thuần túy). Sau đó tự động bổ sung giải thích lý thuyết."""
+    genai.configure(api_key=api_key)
+    p1 = _norm_p1(result.get("phan_1"))
+    p2 = _norm_p2(result.get("phan_2"))
+    temps = [0.1, 0.3, 0.5]
+
+    for rnd in range(max_rounds):
+        miss1 = [c for c in range(1, 25) if c not in p1]
+        miss2 = [c for c in range(1, 7) if _p2_score(p2.get(c)) < 4]
+        if not miss1 and not miss2:
+            break
+        temp = temps[min(rnd, len(temps) - 1)]
+
+        if miss1:
+            try:
+                prompt = (f"Đây là đề thi Tin học. CHỈ giải các câu PHẦN I có số thứ tự sau (đúng số 'Câu N' ghi trong đề): "
+                          f"{', '.join(map(str, miss1))}.\nTìm chính xác từng câu trong đề, cau_hoi = đúng số câu gốc, "
+                          f"dap_an là A/B/C/D, giải thích dưới 20 từ. Không bỏ sót câu nào trong danh sách.")
+                got = _ask_subset(model_name, BaiGiaiPhan1, prompt, text, pdf_bytes, temp)
+                for it in _norm_p1(got.get("phan_1")).items():
+                    if it[0] in miss1:
+                        p1[it[0]] = it[1]
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+        if miss2:
+            try:
+                desc = {1: "Câu 1 (Phần chung)", 2: "Câu 2 (Phần chung)",
+                        3: "Câu 3 (Phần riêng Khoa học máy tính, câu 1 của mục KHMT)",
+                        4: "Câu 4 (Phần riêng Khoa học máy tính, câu 2 của mục KHMT)",
+                        5: "Câu 5 (Phần riêng Tin học ứng dụng, câu 1 của mục THUD)",
+                        6: "Câu 6 (Phần riêng Tin học ứng dụng, câu 2 của mục THUD)"}
+                prompt = ("Đây là đề thi Tin học. CHỈ giải các câu PHẦN II (Đúng/Sai) sau, mỗi câu đủ 4 ý a, b, c, d:\n"
+                          + "\n".join(f"- {desc[c]} => cau_hoi = {c}" for c in miss2)
+                          + "\ny_a..y_d chỉ là 'Đúng' hoặc 'Sai'. TUYỆT ĐỐI KHÔNG giải thích. Trả về đúng Schema BaiGiaiPhan2.")
+                got = _ask_subset(model_name, BaiGiaiPhan2, prompt, text, pdf_bytes, temp)
+                items = [it for it in (got.get("phan_2") or []) if isinstance(it, dict)]
+                for i, it in enumerate(items):
+                    try:
+                        c = int(it.get("cau_hoi"))
+                    except Exception:
+                        c = None
+                    if c not in miss2 and len(items) == len(miss2):
+                        c = miss2[i]  # AI đánh số lệch -> ánh xạ theo thứ tự yêu cầu
+                    if c in miss2 and _p2_score(it) > _p2_score(p2.get(c)):
+                        it = dict(it)
+                        it["cau_hoi"] = c
+                        p2[c] = it
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+    result["phan_1"] = [p1[c] for c in sorted(p1)]
+    result["phan_2"] = [p2[c] for c in sorted(p2)]
+
+    # Bổ sung giải thích lý thuyết ngắn gọn cho toàn bộ Phần II bằng Text thuần (nhẹ và chuẩn)
+    if result["phan_2"]:
+        result["phan_2"] = enrich_p2_explanations(api_key, result["phan_2"], text=text, model_name=model_name)
+
+    left1 = [c for c in range(1, 25) if c not in p1]
+    left2 = [c for c in range(1, 7) if _p2_score(p2.get(c)) < 4]
+    warns = []
+    if left1:
+        warns.append(f"Phần I còn thiếu câu: {', '.join(map(str, left1))}")
+    if left2:
+        warns.append(f"Phần II còn thiếu câu: {', '.join(map(str, left2))}")
+    if warns:
+        result["canh_bao"] = warns
+    else:
+        result.pop("canh_bao", None)
+    return result
+
+
+def call_gemini_api(api_key, text, ma_de, nam_thi="2025", pdf_bytes=None, model_name="gemini-3.8-flash"):
+    """Giải đề (Flash 2 pha / Pro single-shot) rồi tự động VÁ các câu/ý AI bỏ sót bằng các lượt hỏi lại có mục tiêu."""
+    _USAGE_LOG.clear()
+    result = _call_gemini_api_base(api_key, text, ma_de, nam_thi, pdf_bytes=pdf_bytes, model_name=model_name)
+    if not isinstance(result, dict):
+        return result
+    try:
+        result = fill_missing_answers(api_key, result, text, pdf_bytes, model_name)
+    except Exception:
+        pass
+    result["chan_doan_token"] = list(_USAGE_LOG)
+    return result
+
+
+def parse_answer_key_pdf(api_key, pdf_file, target_codes=None, model_name="gemini-3.8-flash"):
+    """
+    Dùng Gemini Multimodal Vision để đọc bảng đáp án in ngang và có con dấu với cơ chế tách lớp màu thị giác:
+    Bỏ qua mực đỏ mộc tròn, tập trung bóc tách nét chữ mực đen bên dưới.
+    """
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        generation_config=genai.GenerationConfig(
+            response_mime_type="application/json",
+            temperature=0.1,
+            max_output_tokens=8192
+        )
+    )
+    
+    pdf_bytes = pdf_file.getvalue() if hasattr(pdf_file, 'getvalue') else None
+    if not pdf_bytes and isinstance(pdf_file, str):
+        with open(pdf_file, 'rb') as f:
+            pdf_bytes = f.read()
+            
+    if not pdf_bytes:
+        return pd.DataFrame(), "2025"
+
+    pdf_part = {
+        "mime_type": "application/pdf",
+        "data": pdf_bytes
+    }
+    
+    code_filter_instruction = ""
+    if target_codes:
+        code_filter_instruction = f"""
+YÊU CẦU QUAN TRỌNG VỀ DANH SÁCH MÃ ĐỀ:
+- BẮT BUỘC BÓC TÁCH ĐẦY ĐỦ TẤT CẢ CÁC MÃ ĐỀ: {', '.join(target_codes)}.
+- Trả về JSON chứa TẤT CẢ từng mã đề trong danh sách trên (mỗi mã đề là 1 key tương ứng).
+- CHỈ trả về đúng các mã đề trong danh sách trên, KHÔNG trả về các mã đề khác (các mã khác sẽ được đọc ở lượt riêng).
+- Gióng đúng CỘT của từng mã đề, tuyệt đối không lấy nhầm cột bên cạnh."""
+    
+    prompt = f"""Bạn là chuyên gia thị giác máy tính và OCR siêu chính xác chuyên bóc tách bảng ma trận đáp án kỳ thi THPT Quốc gia môn Tin học của Bộ GD&ĐT.
+Hãy đọc toàn bộ bảng ma trận đáp án từ file PDF đính kèm.
+
+LƯU Ý ĐẶC BIỆT VỀ CON DẤU MỘC ĐỎ VÀ CƠ CHẾ TÁCH LỚP MÀU:
+1. TÁCH LỚP MÀU THỊ GIÁC (COLOR SEPARATION):
+   - Bảng đáp án, số câu và các chữ cái đáp án gốc ĐỀU ĐƯỢC IN BẰNG MỰC ĐEN (BLACK INK) sắc nét.
+   - Con mộc tròn và chữ trong con dấu của Bộ GD&ĐT là MỰC ĐỎ/HỒNG (RED/MAGENTA INK) đóng đè lên trên.
+   - HÃY BỎ QUA HOÀN TOÀN LỚP MỰC ĐỎ (các vòng tròn mộc đỏ, chữ đỏ, vết mực đỏ lem). Chỉ nhìn xuyên qua và bóc tách các nét ký tự MỰC ĐEN nguyên thủy nằm bên dưới.
+
+2. PHÂN BIỆT HÌNH HỌC KÝ TỰ BỊ MỘC ĐỎ ĐÈ (Rất quan trọng ở các cột 0501, 0502, 0503, 0504 và 0525, 0526, 0527, 0528 từ câu 1 đến câu 10):
+   - Chữ 'B': Luôn có 1 nét thẳng đứng mực đen bên trái + 2 bụng cong mực đen bên phải. TUYỆT ĐỐI không đọc nhầm thành 'D' do viền mộc đỏ làm mờ khe giữa 2 bụng.
+   - Chữ 'C': Luôn là nét cong HỞ RỘNG BÊN PHẢI bằng mực đen. Đường viền cong của mộc đỏ có thể đi qua mép phải tạo cảm giác khép kín, TUYỆT ĐỐI KHÔNG đọc thành 'D' hay 'O' khi nét mực đen vốn hở.
+   - Chữ 'D': Có 1 nét thẳng đứng mực đen bên trái + 1 bụng cong duy nhất mở rộng.
+   - Chữ 'A': Có đỉnh nhọn 2 nét xiên mực đen chụm lại phía trên + gạch ngang ở giữa.
+   - TẤT CẢ các ô Phần 1 (từ câu 1 đến 24) BẮT BUỘC chỉ là một trong 4 ký tự: A, B, C, D. Không có ký tự nào là O, 8, S hay 0.
+
+3. GIÓNG HÀNG VÀ CỘT:
+   - Dù con dấu làm mờ một số đường kẻ ô, hãy gióng hàng ngang (câu 1 đến câu 30) và cột dọc (mã đề) theo đúng vị trí lưới ma trận để không bị lệch hàng.
+{code_filter_instruction}
+
+QUY CÁCH DỮ LIỆU:
+- Cột: Các Mã đề (ví dụ 0501 đến 0548).
+- Hàng 1 đến 24: là Phần 1 (trắc nghiệm: 1 ký tự A, B, C hoặc D).
+- Hàng 25 đến 30: là Phần 2 (Đúng/Sai gồm 4 ý A,B,C,D; ký hiệu D=Đúng, S=Sai):
+  + Hàng 25: Câu 1
+  + Hàng 26: Câu 2
+  + Hàng 27: Câu 3 (Khoa học máy tính)
+  + Hàng 28: Câu 4 (Khoa học máy tính)
+  + Hàng 29: Câu 5 (Tin học ứng dụng)
+  + Hàng 30: Câu 6 (Tin học ứng dụng)
+
+ĐỊNH DẠNG ĐẦU RA (JSON BẮT BUỘC, TUYỆT ĐỐI KHÔNG CHÈN DẤU // HOẶC COMMENT):
+{{
+  "0501": {{
+    "p1": ["D", "B", "A", "C", "D", "C", "B", "C", "A", "B", "A", "D", "D", "D", "B", "D", "C", "C", "C", "B", "B", "B", "C", "C"],
+    "p2": [
+      ["S", "D", "S", "D"],
+      ["S", "D", "S", "D"],
+      ["D", "S", "D", "S"],
+      ["S", "S", "D", "D"],
+      ["D", "D", "S", "S"],
+      ["D", "S", "S", "D"]
+    ]
+  }}
+}}
+Chỉ trả về JSON thuần hợp lệ, không chứa bất kỳ giải thích hay ký tự comment nào."""
+
+    response = model.generate_content([pdf_part, prompt])
+    resp_text = response.text.strip()
+    
+    # Dọn sạch định dạng code fences
+    resp_text = re.sub(r'^```(?:json)?\s*', '', resp_text, flags=re.MULTILINE)
+    resp_text = re.sub(r'\s*```$', '', resp_text, flags=re.MULTILINE)
+    resp_text = re.sub(r'//.*', '', resp_text)
+    resp_text = re.sub(r'/\*.*?\*/', '', resp_text, flags=re.DOTALL)
+    resp_text = re.sub(r',\s*([\]}])', r'\1', resp_text)
+    
+    json_match = re.search(r'\{.*\}', resp_text, re.DOTALL)
+    if json_match:
+        resp_text = json_match.group()
+        
+    try:
+        data = json.loads(resp_text, strict=False)
+    except Exception:
+        data = {}
+        for m in re.finditer(r'"(\d{3,4})"\s*:\s*\{([^{}]+(?:\{[^{}]*\}[^{}]*)*)\}', resp_text):
+            code = m.group(1)
+            block = m.group(2)
+            p1_m = re.search(r'"p1"\s*:\s*\[(.*?)\]', block)
+            p1_vals = re.findall(r'"([A-Da-d])"', p1_m.group(1)) if p1_m else []
+            p2_m = re.search(r'"p2"\s*:\s*\[(.*)\]', block, re.DOTALL)
+            p2_groups = []
+            if p2_m:
+                for sub in re.findall(r'\[(.*?)\]', p2_m.group(1)):
+                    p2_groups.append(re.findall(r'"([^"]+)"', sub))
+            data[code] = {"p1": p1_vals, "p2": p2_groups}
+    
+    # Mở phẳng dữ liệu (unwrap) nếu Gemini bọc ngoài bằng object cha
+    unwrapped_data = {}
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if isinstance(v, dict) and ("p1" in v or "p2" in v):
+                m_code = re.search(r'\d{3,4}', str(k))
+                clean_k = m_code.group(0) if m_code else str(k).strip()
+                unwrapped_data[clean_k] = v
+            elif isinstance(v, dict):
+                for sub_k, sub_v in v.items():
+                    if isinstance(sub_v, dict) and ("p1" in sub_v or "p2" in sub_v):
+                        m_code = re.search(r'\d{3,4}', str(sub_k))
+                        clean_sub_k = m_code.group(0) if m_code else str(sub_k).strip()
+                        unwrapped_data[clean_sub_k] = sub_v
+    if unwrapped_data:
+        data = unwrapped_data
+
+    rows_data = []
+    y_labels = ['A', 'B', 'C', 'D']
+    
+    for ma_de, content in data.items():
+        ma_de_str = str(ma_de).strip()
+        if ma_de_str.isdigit() and len(ma_de_str) == 3:
+            canonical_code = f"0{ma_de_str}"
+        else:
+            canonical_code = ma_de_str
+            
+        p1 = content.get("p1", [])
+        p2 = content.get("p2", [])
+        
+        for idx, ans in enumerate(p1):
+            rows_data.append({
+                "Mã Đề": canonical_code,
+                "Phần": 1,
+                "Câu": idx + 1,
+                "Ý": "",
+                "Đáp Án": str(ans).strip().upper()
+            })
+        for cau_idx, y_group in enumerate(p2):
+            if isinstance(y_group, str):
+                vals = [c for c in y_group if c.upper() in ['D', 'S', 'Đ']]
+            else:
+                vals = list(y_group)
+                
+            for y_idx, val in enumerate(vals[:4]):
+                val_str = str(val).strip().upper()
+                final_val = "Đúng" if val_str in ['D', 'Đ', 'ĐÚNG'] else "Sai"
+                rows_data.append({
+                    "Mã Đề": canonical_code,
+                    "Phần": 2,
+                    "Câu": cau_idx + 1,
+                    "Ý": y_labels[y_idx],
+                    "Đáp Án": final_val
+                })
+                    
+    detected_key_year = "2025"
+    m_ky = re.search(r'202[4-9]', resp_text)
+    if m_ky:
+        detected_key_year = m_ky.group(0)
+    elif hasattr(pdf_file, 'name'):
+        m_fn = re.search(r'202[4-9]', pdf_file.name)
+        if m_fn:
+            detected_key_year = m_fn.group(0)
+            
+    return pd.DataFrame(rows_data), detected_key_year
+
+
+def detect_answer_key_codes(api_key, pdf_bytes, model_name="gemini-3.8-flash"):
+    """
+    Lượt gọi AI nhẹ: Liệt kê toàn bộ mã đề (tiêu đề cột) và năm thi có trong file PDF đáp án.
+    """
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        generation_config=genai.GenerationConfig(
+            response_mime_type="application/json",
+            temperature=0.0,
+            max_output_tokens=2048
+        )
+    )
+    prompt = """Đây là file PDF bảng ma trận đáp án môn Tin học kỳ thi Tốt nghiệp THPT.
+Hãy liệt kê TẤT CẢ các mã đề (tiêu đề cột, thường dạng 4 chữ số như 0501, 0502...) xuất hiện trong toàn bộ file (mọi trang), và năm thi ghi trên tài liệu.
+Chỉ trả về JSON dạng: {"nam_thi": 2025, "danh_sach_ma_de": ["0501", "0502"]}"""
+    response = model.generate_content([{"mime_type": "application/pdf", "data": pdf_bytes}, prompt])
+    txt = response.text.strip()
+    m = re.search(r'\{.*\}', txt, re.DOTALL)
+    data = {}
+    try:
+        data = json.loads(m.group(0) if m else txt)
+    except Exception:
+        pass
+    codes = data.get("danh_sach_ma_de") or re.findall(r'"(\d{3,4})"', txt)
+    codes = sorted({normalize_ma_de(c) for c in codes if re.search(r'\d{3,4}', str(c))})
+    year = str(data.get("nam_thi", "")) if data.get("nam_thi") else ""
+    return codes, year
+
+
+def parse_full_answer_key_pdf(api_key, pdf_file, model_name="gemini-3.8-flash", chunk_size=12, progress_cb=None):
+    """
+    Bóc tách 1 lần TOÀN BỘ file PDF đáp án (vd: 48 mã đề).
+    Chia mã đề thành từng nhóm nhỏ (chunks) để mỗi lượt gọi không bị cắt cụt đầu ra, sau đó gộp lại và thử lại các mã bị thiếu.
+    Trả về: (DataFrame, năm_thi, danh_sách_mã_đề, danh_sách_mã_thiếu)
+    """
+    pdf_bytes = pdf_file.getvalue() if hasattr(pdf_file, 'getvalue') else None
+    if not pdf_bytes:
+        return pd.DataFrame(), "2025", [], []
+
+    if progress_cb:
+        progress_cb(0.05, "Đang liệt kê toàn bộ mã đề trong file đáp án...")
+    codes, year = detect_answer_key_codes(api_key, pdf_bytes, model_name=model_name)
+    m_fn = re.search(r'202[4-9]', getattr(pdf_file, 'name', ''))
+    if m_fn:
+        year = m_fn.group(0)
+    year = year or "2025"
+    if not codes:
+        df, y2 = parse_answer_key_pdf(api_key, pdf_file, model_name=model_name)
+        return df, year or y2, sorted(df['Mã Đề'].unique().tolist()) if not df.empty else [], []
+
+    def _complete_codes(df):
+        if df.empty:
+            return set()
+        cnt = df.groupby('Mã Đề').size()
+        return {c for c, n in cnt.items() if n >= 48}
+
+    frames = []
+    chunks = [codes[i:i + chunk_size] for i in range(0, len(codes), chunk_size)]
+    for i, chunk in enumerate(chunks):
+        if progress_cb:
+            progress_cb(0.1 + 0.75 * i / len(chunks), f"Đang bóc tách nhóm {i + 1}/{len(chunks)}: {', '.join(chunk)}")
+        df_c, _ = parse_answer_key_pdf(api_key, pdf_file, target_codes=chunk, model_name=model_name)
+        if not df_c.empty:
+            df_c['Mã Đề'] = df_c['Mã Đề'].map(normalize_ma_de)
+            frames.append(df_c[df_c['Mã Đề'].isin(chunk)])
+        if i < len(chunks) - 1:
+            time.sleep(2)  # Giãn nhịp tránh lỗi 429
+
+    df_all = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if not df_all.empty:
+        df_all = df_all.drop_duplicates(subset=['Mã Đề', 'Phần', 'Câu', 'Ý'], keep='first')
+
+    # Thử lại 1 lần cho các mã bị thiếu hoặc không đủ 48 câu/ý
+    missing = [c for c in codes if c not in _complete_codes(df_all)]
+    if missing:
+        if progress_cb:
+            progress_cb(0.9, f"Thử đọc lại {len(missing)} mã còn thiếu: {', '.join(missing)}")
+        df_r, _ = parse_answer_key_pdf(api_key, pdf_file, target_codes=missing, model_name=model_name)
+        if not df_r.empty:
+            df_r['Mã Đề'] = df_r['Mã Đề'].map(normalize_ma_de)
+            df_r = df_r[df_r['Mã Đề'].isin(missing)]
+            if not df_all.empty:
+                df_all = df_all[~df_all['Mã Đề'].isin(df_r['Mã Đề'].unique())]
+            df_all = pd.concat([df_all, df_r], ignore_index=True)
+        missing = [c for c in codes if c not in _complete_codes(df_all)]
+
+    if progress_cb:
+        progress_cb(1.0, "Hoàn tất bóc tách đáp án.")
+    return df_all, year, codes, missing

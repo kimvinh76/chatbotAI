@@ -1,35 +1,41 @@
 # 🤖 Hệ Thống AI Chấm Thi & Đánh Giá Đề Thi Tin Học THPT (Chuẩn Bộ GD&ĐT 2025)
 
-Hệ thống ứng dụng **Generative AI (Google Gemini 3.5 Flash)** kết hợp thư viện xử lý tài liệu **pdfplumber** nhằm tự động hóa quy trình bóc tách đề thi, giải đề độc lập, đối sánh đáp án chuẩn và chấm điểm hàng loạt (Batch Processing) cho các đề thi môn Tin học theo cấu trúc mới nhất của Bộ Giáo dục và Đào tạo năm 2025.
+Hệ thống ứng dụng **Generative AI (Google Gemini 3.8 Flash & Gemini 3.1 Pro)** kết hợp thư viện xử lý tài liệu **pdfplumber**, thị giác máy tính tách mộc đỏ và cơ sở dữ liệu **MongoDB Atlas** nhằm tự động hóa quy trình bóc tách đề thi, giải đề độc lập, đối sánh đáp án chuẩn và chấm điểm hàng loạt (Batch Processing) cho các đề thi môn Tin học theo cấu trúc mới nhất của Bộ Giáo dục và Đào tạo.
 
 ---
 
 ## 🌟 Tính Năng Nổi Bật
 
-- **Xử lý hàng loạt (Batch Processing):** Hỗ trợ kéo thả và chấm đồng thời từ 30 – 50 file PDF đề thi chỉ trong 1 lần chạy.
-- **Bóc tách đề thi chính xác:** Trích xuất văn bản đề thi từ PDF nguyên bản, giữ nguyên định dạng đoạn mã và câu hỏi.
-- **Giải đề bằng AI với JSON Schema (Structured Output):**
-  - **Phần 1:** Trắc nghiệm nhiều lựa chọn (Câu 1 - 24).
-  - **Phần 2:** Trắc nghiệm Đúng/Sai với 4 ý a, b, c, d (Câu 25 - 28).
-  - **Phần 3:** Trắc nghiệm trả lời ngắn (Câu 29 - 30).
-- **Tự động phân tích Ma trận Đáp án chuẩn:** Đọc trực tiếp bảng ma trận in ngang (Landscape) của Bộ GD&ĐT từ file PDF mà không tốn token AI.
-- **Chấm điểm & Đối sánh tự động:** So sánh chi tiết bài làm của AI với đáp án chuẩn, highlight đúng/sai, tính điểm thang 10.
-- **Báo cáo & Lưu trữ:**
-  - Xuất bảng tổng hợp kết quả chi tiết ra file **CSV**.
-  - Lưu trữ lịch sử chấm thi vào cơ sở dữ liệu **MongoDB** (tuỳ chọn).
+- **Kiến trúc Modular Monolith:** Mã nguồn được phân tách rõ ràng thành các tầng `core/` (nghiệp vụ lõi) và `views/` (giao diện Streamlit), dễ dàng bảo trì và phát triển.
+- **Chiến lược 2 Pha (Flash Multi-Phase):** Giúp mô hình Flash siêu rẻ (~30 VNĐ/đề) đọc trọn vẹn và giải chính xác 100% cả 24 câu trắc nghiệm Phần I và 6 câu Đúng/Sai (24 ý) Phần II kèm lời giải thích.
+- **Tự động nhận diện Đề & Năm thi:** AI tự động đọc Năm thi (2025, 2026...) và Mã đề trực tiếp từ tiêu đề file PDF.
+- **Bóc tách Ma trận Đáp án xuyên Mộc Đỏ:** AI Vision phân tách lớp mực đen và mực đỏ để đọc chuẩn xác bảng ma trận in ngang của Bộ GD&ĐT.
+- **Ngân hàng Đáp án & Khóa An Toàn:** Quản lý toàn bộ 48 mã đề trên MongoDB dưới dạng Ma trận bảng; hỗ trợ rà soát, sửa trực tiếp và Khóa Phê Duyệt chống ghi đè vĩnh viễn.
+- **Cache Bài Giải Thông Minh:** Tự động lưu và kiểm tra chất lượng bài giải cũ trong MongoDB; phát hiện bài cũ thiếu giải thích Phần II để ép giải mới; có nút chủ động "Bắt buộc giải lại đề".
+- **Báo cáo Đa Sheet:** Xuất báo cáo điểm tổng hợp và bảng chi tiết từng câu hỏi ra file Excel `.xlsx` với bộ đệm RAM tức thì.
 
 ---
 
-## 📁 Cấu Trúc Dự Án
+## 📁 Cấu Trúc Dự Án (Modular Monolith)
 
 ```text
 doanchuyennganh/
-├── app.py              # File mã nguồn chính (Giao diện Streamlit & Logic xử lý)
-├── requirements.txt    # Danh sách thư viện Python cần thiết
-├── .env.example        # File mẫu cấu hình biến môi trường
-├── .env                # File cấu hình biến môi trường (không đẩy lên Git)
-├── .gitignore          # Cấu hình bỏ qua các file nhạy cảm và tạm thời
-└── README.md           # Tài liệu hướng dẫn sử dụng
+├── app.py                      # File điều phối chính (Streamlit Entry Point ~150 dòng)
+├── core/                       # Tầng xử lý nghiệp vụ lõi (Business Logic & Backend)
+│   ├── __init__.py
+│   ├── ai_grader.py            # System Prompt, Schemas, Gọi Gemini API (2-Phase Flash & Auto-Rescue)
+│   ├── database.py             # MongoDB Connection Pool & Quản lý 4 Collections
+│   ├── excel_utils.py          # Bóc tách Excel/CSV, chuyển đổi Ma trận Bộ GD&ĐT, xuất bytes
+│   ├── grading_logic.py        # Chuẩn hóa trích xuất P1 & P2, bóc tách giải thích và chấm điểm
+│   └── pdf_utils.py            # Trích xuất text PDF và tự động nhận diện Mã đề/Năm thi
+├── views/                      # Tầng giao diện người dùng (Streamlit Views)
+│   ├── __init__.py
+│   ├── tab_grading.py          # Tab 1: Chấm thi tự động hàng loạt (Batch Grader)
+│   ├── tab_history.py          # Tab 2: Lịch sử đợt chấm thi & xuất báo cáo đa sheet
+│   └── tab_keys.py             # Tab 3: Ngân hàng đáp án chuẩn & Ma trận Bộ GD&ĐT
+├── requirements.txt            # Danh sách thư viện Python
+├── .env                        # Biến môi trường cấu hình bí mật (GEMINI_API_KEY, MONGODB_URI)
+└── README.md                   # Tài liệu hướng dẫn sử dụng
 ```
 
 ---
@@ -37,63 +43,29 @@ doanchuyennganh/
 ## ⚙️ Yêu Cầu Hệ Thống
 
 - **Python:** Phiên bản `>= 3.10`
-- **Google Gemini API Key:** Lấy miễn phí tại [Google AI Studio](https://aistudio.google.com/)
-- **MongoDB Atlas (Tuỳ chọn):** Để lưu trữ lịch sử chấm thi
+- **Google Gemini API Key:** Lấy tại [Google AI Studio](https://aistudio.google.com/)
+- **MongoDB Atlas:** Chuỗi kết nối MongoDB Connection String
 
 ---
 
 ## 🚀 Hướng Dẫn Cài Đặt & Chạy Ứng Dụng
 
-### Bước 1: Mở Terminal tại thư mục dự án
-```bash
-cd d:\doanchuyennganh
-```
-
-### Bước 2: Tạo và kích hoạt môi trường ảo (Khuyến nghị)
-- **Trên Windows (PowerShell):**
-  ```powershell
-  python -m venv .venv
-  .\.venv\Scripts\Activate.ps1
-  ```
-- **Trên Windows (Command Prompt):**
-  ```cmd
-  python -m venv .venv
-  .\.venv\Scripts\activate.bat
-  ```
-
-### Bước 3: Cài đặt các thư viện phụ thuộc
-```bash
+### Bước 1: Môi trường ảo & Cài đặt thư viện
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-### Bước 4: Cấu hình biến môi trường
-Tạo file `.env` (hoặc sao chép từ `.env.example`) và điền API Key:
+### Bước 2: Cấu hình file `.env`
+Tạo file `.env` tại thư mục gốc:
 ```env
 GEMINI_API_KEY=your_gemini_api_key_here
-MONGODB_URI=your_mongodb_connection_string_here
+MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority
 ```
-*(Lưu ý: Bạn cũng có thể nhập API Key trực tiếp trên giao diện Sidebar của Streamlit khi chạy app).*
 
-### Bước 5: Khởi chạy ứng dụng Streamlit
+### Bước 3: Khởi chạy ứng dụng Streamlit
 ```bash
 python -m streamlit run app.py
 ```
-Ứng dụng sẽ tự động mở trên trình duyệt tại địa chỉ: `http://localhost:8501`.
-
----
-
-## 📖 Hướng Dẫn Sử Dụng Trên Giao Diện
-
-1. **Cấu hình Sidebar:**
-   - Kiểm tra `Gemini API Key` và `Năm Thi` (mặc định: `2025`).
-   - (Tuỳ chọn) Nhập `MongoDB URI` nếu muốn lưu trữ lịch sử vào Database.
-2. **Quy ước đặt tên file Đề thi (PDF):**
-   - Đặt tên file PDF đề thi chứa mã đề gồm 3-4 chữ số để hệ thống tự động nhận diện và tra cứu đáp án (Ví dụ: `De_0503.pdf`, `De_501.pdf`, `502.pdf`...).
-3. **Tải dữ liệu:**
-   - **Cột trái:** Kéo thả 1 hoặc nhiều file PDF Đề thi cần chấm.
-   - **Cột phải:** Kéo thả file Đáp án chuẩn (hỗ trợ file PDF ma trận đáp án của Bộ GD&ĐT, hoặc file CSV / Excel).
-4. **Bắt đầu chấm:**
-   - Nhấn **🚀 Bắt Đầu Xử Lý Hàng Loạt**.
-   - Hệ thống sẽ lần lượt giải từng đề thi, đối sánh đáp án và hiển thị bảng kết quả.
-5. **Xuất kết quả:**
-   - Sau khi hoàn tất, nhấn **📥 Tải xuống Bảng Kết Quả (CSV)** để lưu báo cáo chấm thi.
+Ứng dụng sẽ tự động mở tại: `http://localhost:8501`.
