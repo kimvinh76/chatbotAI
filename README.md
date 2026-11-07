@@ -48,7 +48,7 @@ doanchuyennganh/
 
 ---
 
-## 🚀 Hướng Dẫn Cài Đặt & Chạy Ứng Dụng
+##  Hướng Dẫn Cài Đặt & Chạy Ứng Dụng
 
 ### Bước 1: Môi trường ảo & Cài đặt thư viện
 ```powershell
@@ -65,7 +65,22 @@ MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=tru
 ```
 
 ### Bước 3: Khởi chạy ứng dụng Streamlit
-```bash
+
+Bạn có thể chạy ứng dụng theo bất kỳ cách nào dưới đây:
+
+**Cách 1 (Nhanh nhất - 1 click):**
+- Bấm đúp vào tệp `run_app.bat` (hoặc trong Terminal gõ `.\run` rồi Enter).
+
+**Cách 2 (Dùng lệnh chuẩn):**
+Mở một cửa sổ Terminal mới tại `D:\doanchuyennganh` và gõ:
+```powershell
+streamlit run app.py
+```
+hoặc:
+```powershell
 python -m streamlit run app.py
 ```
-Ứng dụng sẽ tự động mở tại: `http://localhost:8501`.
+
+> **Lưu ý:** Nếu terminal đang mở sẵn từ trước khi cài đặt, hãy **tắt đi và mở lại tab Terminal mới** (hoặc gõ `.\run`) để Windows nạp lại biến môi trường nhé.
+
+Ứng dụng sẽ tự động khởi chạy tại: `http://localhost:8501`.

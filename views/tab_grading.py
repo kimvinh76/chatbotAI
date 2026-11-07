@@ -20,7 +20,8 @@ import pandas as pd
 import streamlit as st
 
 from core.pdf_utils import extract_text_from_pdf, detect_metadata_from_file_and_text
-from core.ai_grader import call_gemini_api, enrich_p2_explanations
+from core.ai_grader import call_gemini_api
+from core.mock_data import generate_mock_exam_solution
 from core.database import (
     get_solved_exam_cache,
     save_solved_exam_cache,
@@ -29,11 +30,11 @@ from core.database import (
     save_to_mongodb,
     save_grading_batch,
 )
-from core.grading_logic import build_comparison_and_detail_df
+from core.grading_logic import build_comparison_and_detail_df, render_comparison_detail_table
 from core.excel_utils import df_to_excel_bytes
 
 
-def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, use_cache: bool):
+def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, use_cache: bool, mock_mode: bool = False):
     """
     Render giao diện và điều phối luồng xử lý của Tab 1: Chấm Thi Tự Động.
     
@@ -42,35 +43,30 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
     - mongo_uri: Chuỗi kết nối MongoDB Atlas
     - model_choice: Model AI đang chọn (Flash 3.8 hoặc Pro 3.1)
     - use_cache: Bật/Tắt tính năng dùng lại bài giải đã lưu
+    - mock_mode: Chế độ chạy thử nghiệm giao diện (0 token API)
     """
-    st.subheader("📄 Tải Lên Đề Thi (PDF)")
+    if mock_mode:
+        st.warning("**Chế độ Mô Phỏng (Dry-Run / 0 Token) đang BẬT:** Hệ thống sẽ sinh bài giải giả lập sát thực tế để kiểm tra giao diện mà KHÔNG gọi Gemini API.", icon=":material/science:")
+
+    st.subheader(":material/upload_file: Tải Lên Đề Thi (PDF)")
     st.caption(
-        "💡 Hệ thống tự động nhận diện Mã Đề & Năm Thi từ đề thi, sau đó đối soát trực tiếp "
+        "Hệ thống tự động nhận diện Mã Đề & Năm Thi từ đề thi, sau đó đối soát trực tiếp "
         "với **Ngân Hàng Đáp Án Chuẩn** trong MongoDB (quản lý tại Tab 3) mà không cần tải kèm file đáp án."
     )
 
-    c_up1, c_up2 = st.columns([3, 2])
-    with c_up1:
-        pdf_files = st.file_uploader(
-            "Kéo thả 1 hoặc nhiều file PDF đề thi để bắt đầu chấm:",
-            type=['pdf'],
-            accept_multiple_files=True
-        )
-    with c_up2:
-        # [QUAN TRỌNG] Cho phép người dùng chủ động bỏ qua Cache khi cần giải lại bài thi
-        force_regrade = st.checkbox(
-            "🔄 Bắt buộc giải lại đề (Bỏ qua Cache)",
-            value=False,
-            help="Tích vào ô này nếu lần trước AI giải sai hoặc thiếu lời giải thích, để ép AI đọc lại PDF và giải mới 100%!"
-        )
+    pdf_files = st.file_uploader(
+        "Kéo thả 1 hoặc nhiều file PDF đề thi để bắt đầu chấm:",
+        type=['pdf'],
+        accept_multiple_files=True
+    )
 
-    if st.button("🚀 Bắt Đầu Chấm Thi Hàng Loạt", use_container_width=True, type="primary"):
+    if st.button("Bắt Đầu Chấm Thi Hàng Loạt", icon=":material/play_circle:", use_container_width=True, type="primary"):
         if not gemini_api_key:
-            st.error("⚠️ Vui lòng cấu hình GEMINI_API_KEY trong file .env trước khi chấm thi!")
+            st.error("Vui lòng cấu hình GEMINI_API_KEY trong file .env trước khi chấm thi!")
             return
 
         if not pdf_files:
-            st.warning("⚠️ Vui lòng tải lên ít nhất 1 file PDF đề thi!")
+            st.warning("Vui lòng tải lên ít nhất 1 file PDF đề thi!")
             return
 
         now_dt = datetime.now()
@@ -89,168 +85,136 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
         # =====================================================================
         for idx, pdf_file in enumerate(pdf_files):
             try:
-                status_text.info(f"[{idx+1}/{total_files}] Đang chuẩn bị dữ liệu đề thi `{pdf_file.name}`...")
+                # 1. Kênh văn bản số: Thử trích xuất text layer
                 exam_text = extract_text_from_pdf(pdf_file)
                 pdf_file.seek(0)
+                # Đọc dữ liệu nhị phân sẵn sàng cho kênh AI Vision
                 pdf_bytes = pdf_file.getvalue() if hasattr(pdf_file, 'getvalue') else None
 
-                # [QUAN TRỌNG] Nhận diện Mã Đề & Năm Thi từ văn bản hoặc tên file
+                # Nhận diện Mã Đề & Năm Thi từ văn bản hoặc tên file
                 current_ma_de, current_nam_thi = detect_metadata_from_file_and_text(pdf_file, exam_text)
 
-                st.markdown(f"### 📝 Đang xử lý: Mã đề **{current_ma_de}** | Năm thi: **{current_nam_thi}** (`{pdf_file.name}`)")
+                st.markdown(f"### :material/assignment: Đề {current_ma_de} (Năm {current_nam_thi} — `{pdf_file.name}`)")
 
+                # Phân nhánh hiển thị: PDF văn bản số vs PDF scan/ảnh
                 if exam_text:
-                    with st.expander(f"📄 Xem văn bản trích xuất từ PDF - Đề {current_ma_de}"):
+                    # Nhánh 1: Đề có text số -> mở hộp xem trước
+                    with st.expander(f":material/description: Xem văn bản trích xuất từ PDF - Đề {current_ma_de}"):
                         st.text_area("Văn bản đọc từ file:", value=exam_text, height=180, disabled=True, key=f"raw_text_{idx}")
                 else:
-                    st.info(f"📸 Đề thi `{pdf_file.name}` là tài liệu scan/ảnh. Đang dùng **AI Vision** đọc trực tiếp trang ảnh!")
+                    # Nhánh 2: Đề scan/ảnh (exam_text rỗng) -> Bật luồng Multimodal Vision
+                    st.caption(f":material/document_scanner: Tài liệu dạng scan/ảnh `{pdf_file.name}` — Đang xử lý qua kênh AI Vision trực tiếp.")
 
                 ai_result = None
+                is_from_cache = False
+                t_start_exam = time.time()
 
-                # [QUAN TRỌNG] Kiểm tra Cache trong MongoDB & Đánh giá chất lượng bài giải cũ
-                if use_cache and not force_regrade and mongo_uri:
-                    cached_ai = get_solved_exam_cache(mongo_uri, current_ma_de, current_nam_thi, model_choice)
-                    if cached_ai:
-                        p1_list = cached_ai.get("phan_1", [])
-                        p2_list = cached_ai.get("phan_2", [])
-                        is_full = len(p1_list) >= 24 and len(p2_list) >= 6
-                        p1_has_exp = any(bool(it.get("giai_thich")) for it in p1_list)
-
-                        # Đếm số ý có lời giải thích ở Phần II (chuẩn phải có ít nhất 18/24 ý)
-                        p2_exp_count = sum(
-                            bool(it.get("giai_thich_a")) + bool(it.get("giai_thich_b")) +
-                            bool(it.get("giai_thich_c")) + bool(it.get("giai_thich_d"))
-                            for it in p2_list if isinstance(it, dict)
-                        )
-                        p2_has_exp = (p2_exp_count >= 18)
-
-                        # Kiểm tra xem đáp án có bị dính ngoặc đơn chứa lý do làm hỏng định dạng không
-                        has_paren_leak = any(
-                            '(' in str(it.get('y_a', '')) or '(' in str(it.get('y_b', '')) or
-                            '(' in str(it.get('y_c', '')) or '(' in str(it.get('y_d', ''))
-                            for it in p2_list if isinstance(it, dict)
-                        )
-
-                        if is_full and p1_has_exp and p2_has_exp and not has_paren_leak:
-                            ai_result = cached_ai
-                            st.success(
-                                f"⚡ Đã lấy bài giải ĐẦY ĐỦ ({len(p1_list)} câu P1 + {len(p2_list)} câu P2, "
-                                f"có giải thích chi tiết) từ MongoDB Cache cho Đề {current_ma_de} (Năm {current_nam_thi})!"
+                # NHÁNH 1: Chế độ Mô phỏng Dry-Run (0 Token API)
+                if mock_mode:
+                    status_text.info(f"[{idx+1}/{total_files}] [Mô Phỏng 0 Token] Đang sinh bài giải giả lập cho Đề {current_ma_de}...")
+                    time.sleep(1.0)
+                    ai_result = generate_mock_exam_solution(current_ma_de, current_nam_thi, mongo_uri)
+                    is_from_cache = False
+                else:
+                    # NHÁNH 2: Chế độ Chấm Thật (Kiểm tra Cache MongoDB hoặc gọi Gemini API)
+                    if use_cache and mongo_uri:
+                        cached_ai = get_solved_exam_cache(mongo_uri, current_ma_de, current_nam_thi, model_choice)
+                        if cached_ai:
+                            p1_list = cached_ai.get("phan_1", [])
+                            p2_list = cached_ai.get("phan_2", [])
+                            is_full = (len(p1_list) == 24 and len(p2_list) == 6)
+                            # Đếm số câu có lời giải thích ở Phần I (đủ 24/24 câu)
+                            p1_exp_count = sum(bool(it.get("giai_thich")) for it in p1_list if isinstance(it, dict))
+                            p1_has_exp = (p1_exp_count == 24)
+                            # Đếm số ý có lời giải thích ở Phần II (đủ 24/24 ý)
+                            p2_exp_count = sum(
+                                bool(it.get("giai_thich_a")) + bool(it.get("giai_thich_b")) +
+                                bool(it.get("giai_thich_c")) + bool(it.get("giai_thich_d"))
+                                for it in p2_list if isinstance(it, dict)
                             )
-                        elif is_full and not has_paren_leak:
-                            # Đã có đủ đáp án 24 câu P1 và 6 câu P2 Đúng/Sai, chỉ thiếu giải thích
-                            # Bổ sung giải thích bằng Text thuần (siêu nhẹ, không tốn token đọc lại PDF scan)
-                            st.info(
-                                f"💡 Đề {current_ma_de} đã có đủ đáp án trong Cache nhưng thiếu giải thích. "
-                                f"Đang tự động bổ sung lời giải thích siêu tốc bằng Text thuần (không tốn token đọc lại PDF)..."
+                            p2_has_exp = (p2_exp_count == 24)
+                            # Kiểm tra xem đáp án có bị dính ngoặc đơn chứa lý do làm hỏng định dạng không
+                            has_paren_leak = any(
+                                '(' in str(it.get('y_a', '')) or '(' in str(it.get('y_b', '')) or
+                                '(' in str(it.get('y_c', '')) or '(' in str(it.get('y_d', ''))
+                                for it in p2_list if isinstance(it, dict)
                             )
-                            try:
-                                p2_list_enriched = enrich_p2_explanations(
-                                    gemini_api_key, p2_list, model_name="gemini-3.8-flash"
+                            if is_full and p1_has_exp and p2_has_exp and not has_paren_leak:
+                                ai_result = cached_ai
+                                is_from_cache = True
+                                st.success(
+                                    f"Đã lấy bài giải ĐẦY ĐỦ ({len(p1_list)} câu P1 + {len(p2_list)} câu P2, "
+                                    f"có giải thích chi tiết) từ MongoDB Cache cho Đề {current_ma_de} (Năm {current_nam_thi})!"
                                 )
-                                cached_ai["phan_2"] = p2_list_enriched
-                                ai_result = cached_ai
-                                if mongo_uri:
-                                    save_solved_exam_cache(
-                                        mongo_uri, current_ma_de, current_nam_thi, model_choice, ai_result,
-                                        loai_tai_lieu="scan_image" if not exam_text else "digital_text"
-                                    )
-                                st.success(f"⚡ Đã bổ sung giải thích thành công cho Đề {current_ma_de} và cập nhật vào Cache!")
-                            except Exception:
-                                # Nếu gặp lỗi mạng / quota, vẫn dùng bản cache cũ để chấm điểm bình thường thay vì bị chặn
-                                ai_result = cached_ai
-                                st.warning(f"⚠️ Chưa thể bổ sung giải thích do hạn mức API. Đang dùng đáp án sẵn có trong Cache để chấm điểm.")
-                        else:
-                            # Nếu cache cũ bị thiếu câu thật sự
-                            reason_invalid = []
-                            if not is_full:
-                                reason_invalid.append(f"thiếu câu ({len(p1_list)}/24 P1, {len(p2_list)}/6 P2)")
-                            if has_paren_leak:
-                                reason_invalid.append("dính ngoặc đơn ở đáp án")
-                            st.info(
-                                f"🔄 Bài giải trong Cache của Đề {current_ma_de} chưa đạt chuẩn ({', '.join(reason_invalid)}). "
-                                f"Đang kích hoạt AI ({model_choice}) giải lại toàn diện và cập nhật Cache mới..."
-                            )
+                            else:
+                                st.info(
+                                    f"Bài giải trong Cache của Đề {current_ma_de} chưa đạt chuẩn đầy đủ 24 câu P1 và 24 ý P2 có giải thích. "
+                                    f"Đang kích hoạt AI ({model_choice}) đọc lại đề và giải toàn diện..."
+                                )
 
-                # [QUAN TRỌNG] Nếu chưa có bài giải hoặc cache không hợp lệ, gọi Gemini API
-                if ai_result is None:
-                    status_text.info(f"[{idx+1}/{total_files}] AI ({model_choice}) đang đọc và giải đề thi mã {current_ma_de}...")
-                    ai_result = call_gemini_api(
-                        gemini_api_key, exam_text, current_ma_de, current_nam_thi,
-                        pdf_bytes=pdf_bytes, model_name=model_choice
-                    )
-
-                    # Cập nhật lại năm thi và mã đề nếu AI phát hiện chính xác hơn từ hình ảnh scan
-                    if isinstance(ai_result, dict):
-                        if ai_result.get("nam_thi"):
-                            current_nam_thi = str(ai_result["nam_thi"])
-                        if ai_result.get("ma_de"):
-                            current_ma_de = str(ai_result["ma_de"])
-
-                    # Lưu bài giải vào Cache MongoDB để tái sử dụng
-                    if mongo_uri:
-                        save_solved_exam_cache(
-                            mongo_uri, current_ma_de, current_nam_thi, model_choice, ai_result,
-                            loai_tai_lieu="scan_image" if not exam_text else "digital_text"
+                    # Nếu chưa có bài giải hoặc cache không hợp lệ, gọi Gemini API
+                    if ai_result is None:
+                        status_text.info(f"[{idx+1}/{total_files}] AI ({model_choice}) đang đọc và giải đề thi mã {current_ma_de}...")
+                        ai_result = call_gemini_api(
+                            gemini_api_key, exam_text, current_ma_de, current_nam_thi,
+                            pdf_bytes=pdf_bytes, model_name=model_choice
                         )
+
+                        # Cập nhật lại năm thi và mã đề nếu AI phát hiện chính xác hơn từ hình ảnh scan
+                        if isinstance(ai_result, dict):
+                            if ai_result.get("nam_thi"):
+                                current_nam_thi = str(ai_result["nam_thi"])
+                            if ai_result.get("ma_de"):
+                                current_ma_de = str(ai_result["ma_de"])
+
+                        # Lưu bài giải vào Cache MongoDB để tái sử dụng
+                        if mongo_uri:
+                            save_solved_exam_cache(
+                                mongo_uri, current_ma_de, current_nam_thi, model_choice, ai_result,
+                                loai_tai_lieu="scan_image" if not exam_text else "digital_text"
+                            )
 
                 detected_batch_years.add(current_nam_thi)
 
                 # Cảnh báo nếu sau khi tự vá vẫn còn câu/ý AI chưa giải được
                 if isinstance(ai_result, dict) and ai_result.get("canh_bao"):
-                    st.warning(f"⚠️ Đề {current_ma_de}: " + " | ".join(ai_result["canh_bao"]) +
-                               ". Hãy tích 'Bắt buộc giải lại đề' hoặc dùng model Pro cho đề này.")
+                    st.warning(f"Đề {current_ma_de}: " + " | ".join(ai_result["canh_bao"]) +
+                               ". Bạn có thể tắt 'Sử dụng Cache bài giải' ở thanh bên trái để giải lại hoàn toàn.")
 
-                # Chẩn đoán token: kiểm tra có lượt nào bị cắt cụt (MAX_TOKENS) và chi phí thực tế
+                # Chẩn đoán token: chỉ cảnh báo và hiển thị khi có sự cố cắt cụt (MAX_TOKENS)
                 if isinstance(ai_result, dict) and ai_result.get("chan_doan_token"):
                     diag = ai_result["chan_doan_token"]
                     has_max_tokens = any(d.get("finish") == "MAX_TOKENS" for d in diag)
                     if has_max_tokens:
                         if ai_result.get("canh_bao"):
-                            st.error("🔴 Có lượt gọi bị cắt cụt do hết token (MAX_TOKENS) → dẫn đến thiếu câu hỏi!")
+                            st.error("Có lượt gọi bị cắt cụt do hết token (MAX_TOKENS) → dẫn đến thiếu câu hỏi!")
                         else:
-                            st.info("💡 Lượt gọi đầu bị chạm trần token, nhưng cơ chế tự phục hồi đã nâng trần và hoàn thành trọn vẹn 100% (STOP)!")
-                    with st.expander(f"📊 Chẩn đoán token - Đề {current_ma_de}"):
-                        st.dataframe(pd.DataFrame(diag), use_container_width=True)
-
-                # Hiển thị kết quả JSON thô của AI
-                with st.expander(f"🤖 Xem bài giải JSON của AI - Đề {current_ma_de} (Năm {current_nam_thi})"):
-                    st.json(ai_result)
-                    json_str = json.dumps(ai_result, ensure_ascii=False, indent=2)
-                    st.download_button(
-                        label=f"📥 Tải File JSON Bài Giải Đề {current_ma_de} (.json)",
-                        data=json_str,
-                        file_name=f"bai_giai_ai_{current_ma_de}_{current_nam_thi}.json",
-                        mime="application/json",
-                        key=f"dl_json_{current_ma_de}_{idx}"
-                    )
+                            st.info("Lượt gọi đầu bị chạm trần token, nhưng cơ chế tự phục hồi đã nâng trần và hoàn thành trọn vẹn 100% (STOP)!")
+                        with st.expander(f":material/analytics: Chi tiết sự cố token - Đề {current_ma_de}"):
+                            st.dataframe(pd.DataFrame(diag), use_container_width=True)
 
                 # =============================================================
-                # TÌM ĐÁP ÁN CHUẨN TỪ MONGODB ĐỂ ĐỐI SÁNH
+                # TÌM ĐÁP ÁN CHUẨN ĐỐI SOÁT (CƠ CHẾ 3 TẦNG - 3-TIER KEY RESOLUTION)
                 # =============================================================
                 current_key_df = pd.DataFrame()
-                key_source_note = ""
 
-                # Ưu tiên 1: Bản đã xác thực thủ công (Khóa An Toàn)
+                # Tầng 1: Ưu tiên cao nhất cho đáp án đã DUYỆT THỦ CÔNG (Khóa An Toàn)
                 if mongo_uri:
                     v_df = check_verified_answer_key(mongo_uri, current_ma_de, current_nam_thi)
                     if v_df is not None and not v_df.empty:
                         current_key_df = v_df
-                        key_source_note = "🛡️ **Khóa An Toàn:** Đã ưu tiên đáp án chuẩn **ĐÃ DUYỆT** từ Ngân Hàng MongoDB"
 
-                # Ưu tiên 2: Bản đáp án tự động trong Ngân Hàng Đáp Án
+                # Tầng 2: Dự phòng dùng đáp án TỰ ĐỘNG BÓC TÁCH trong MongoDB (nếu chưa duyệt tay)
                 if current_key_df.empty and mongo_uri:
                     db_key = get_answer_keys_from_db(mongo_uri, nam_thi=current_nam_thi, target_codes=[current_ma_de])
                     if not db_key.empty:
                         current_key_df = db_key
-                        key_source_note = "💡 Đã tự động lấy đáp án chuẩn từ Ngân Hàng MongoDB"
 
-                if not current_key_df.empty:
-                    st.success(f"{key_source_note} cho Đề {current_ma_de} (Năm {current_nam_thi})!")
-                else:
+                # Tầng 3: CSDL chưa có đáp án thì mới thông báo nhắc nhở
+                if current_key_df.empty:
                     st.warning(
-                        f"⚠️ **Chưa có đáp án chuẩn cho Mã đề {current_ma_de} (Năm {current_nam_thi}) trong Ngân Hàng!**\n\n"
-                        f"👉 Vui lòng vào **Tab 3 ('Ngân Hàng Đáp Án Chuẩn')** để nạp file đáp án."
+                        f"**Chưa có đáp án chuẩn cho Mã đề {current_ma_de} (Năm {current_nam_thi}) trong Ngân Hàng!**\n\n"
+                        f"Vui lòng vào **Tab 'Ngân Hàng Đáp Án Chuẩn'** để nạp file đáp án."
                     )
 
                 # =============================================================
@@ -274,20 +238,40 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
                     p2_df = detail_df[detail_df['Phần'] != "Phần I (Trắc nghiệm)"]
 
                     p1_total = len(p1_df)
-                    p1_correct = len(p1_df[p1_df['Kết Quả'] == '✅ Đúng'])
+                    p1_correct = len(p1_df[p1_df['Kết Quả'].astype(str).str.contains('Đúng', na=False)])
 
                     p2_total = len(p2_df)
-                    p2_correct = len(p2_df[p2_df['Kết Quả'] == '✅ Đúng'])
+                    p2_correct = len(p2_df[p2_df['Kết Quả'].astype(str).str.contains('Đúng', na=False)])
 
-                    correct_count = len(detail_df[detail_df['Kết Quả'] == '✅ Đúng'])
+                    correct_count = len(detail_df[detail_df['Kết Quả'].astype(str).str.contains('Đúng', na=False)])
                     score = (correct_count / total_count) * 10 if total_count > 0 else 0
 
                     st.success(
-                        f"🎯 Điểm số Đề {current_ma_de} (Năm {current_nam_thi}): "
+                        f":material/award_star: Điểm số Đề {current_ma_de} (Năm {current_nam_thi}): "
                         f"**{score:.2f} / 10** (Đúng {correct_count}/{total_count} câu/ý)"
                     )
                 else:
-                    st.success(f"✅ Đã giải xong toàn bộ câu hỏi Đề {current_ma_de} (Chưa đối sánh đáp án)")
+                    st.success(f"Đã giải xong toàn bộ câu hỏi Đề {current_ma_de} (Chưa đối sánh đáp án)")
+
+                # Tính toán thời gian thực thi (latency), thống kê Token & Chi phí dự toán
+                latency_sec = round(time.time() - t_start_exam, 2)
+                diag = ai_result.get("chan_doan_token", []) if isinstance(ai_result, dict) else []
+                token_in = sum(int(d.get("token_vao", 0) or 0) for d in diag)
+                token_out = sum(int(d.get("token_ra", 0) or 0) for d in diag)
+                token_thought = sum(int(d.get("token_nghi", 0) or 0) for d in diag)
+
+                if is_from_cache:
+                    cost_vnd = 0.0
+                    source_type = "Cache"
+                else:
+                    source_type = "API"
+                    # Gemini API Pricing (Tỷ giá 1 USD = 25.000 VNĐ)
+                    # Flash: Input $0.10/1M (~0.0025 đ/tok), Output/Thinking $0.40/1M (~0.010 đ/tok)
+                    # Pro:   Input $1.25/1M (~0.03125 đ/tok), Output/Thinking $5.00/1M (~0.125 đ/tok)
+                    if "pro" in str(model_choice).lower():
+                        cost_vnd = round((token_in * 0.03125) + ((token_out + token_thought) * 0.125), 2)
+                    else:
+                        cost_vnd = round((token_in * 0.0025) + ((token_out + token_thought) * 0.010), 2)
 
                 # Ghi nhận kết quả vào bảng tổng kết
                 all_results_summary.append({
@@ -301,27 +285,31 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
                     "P1 Trắc nghiệm": f"{p1_correct}/{p1_total}" if score is not None else f"{p1_total} câu đã giải",
                     "P2 Đúng/Sai": f"{p2_correct}/{p2_total}" if score is not None else f"{p2_total} ý đã giải",
                     "Model AI": model_choice,
+                    "Thời gian (s)": latency_sec,
+                    "Token Vào": token_in,
+                    "Token Ra": token_out,
+                    "Token Nghĩ": token_thought,
+                    "Chi Phí (VNĐ)": cost_vnd,
                     "Thời Gian Chấm": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 })
                 all_details_records.append(detail_df)
 
+                # Hiển thị thẻ tóm tắt hiệu năng của riêng đề thi này
+                m_g1, m_g2, m_g3, m_g4, m_g5 = st.columns(5)
+                m_g1.metric("Thời Gian Xử Lý", f"{latency_sec} s")
+                m_g2.metric("Chi Phí API", f"{cost_vnd} VNĐ")
+                m_g3.metric("Token Vào (Prompt)", f"{token_in:,}")
+                m_g4.metric("Token Ra (Candidate)", f"{token_out:,}")
+                m_g5.metric("Token Nghĩ (Thinking)", f"{token_thought:,}")
+
                 # Hiển thị bảng chi tiết trên UI
-                with st.expander(f"🔍 Xem bảng chi tiết tất cả câu hỏi AI đã làm - Đề {current_ma_de}", expanded=True):
-                    if has_key:
-                        style_func = lambda val: 'color: green; font-weight: bold' if val == '✅ Đúng' else (
-                            'color: red; font-weight: bold' if val == '❌ Sai' else ''
-                        )
-                        if hasattr(detail_df.style, 'map'):
-                            styled_df = detail_df.style.map(style_func, subset=['Kết Quả'])
-                        else:
-                            styled_df = detail_df.style.applymap(style_func, subset=['Kết Quả'])
-                        st.dataframe(styled_df, use_container_width=True)
-                    else:
-                        st.dataframe(detail_df, use_container_width=True)
+                with st.expander(f":material/table_chart: Chi tiết kết quả giải đề - Đề {current_ma_de}", expanded=True):
+                    render_comparison_detail_table(detail_df, key_suffix=f"tab1_{current_ma_de}_{idx}")
 
                     # Nút tải Excel riêng cho đề thi này (Sử dụng Cache RAM tức thì)
                     st.download_button(
-                        label=f"📊 Tải Chi Tiết Đề {current_ma_de} (Excel .xlsx)",
+                        label=f"Tải Chi Tiết Đề {current_ma_de} (Excel .xlsx)",
+                        icon=":material/download:",
                         data=df_to_excel_bytes(detail_df, sheet_name=f'Chi Tiết Đề {current_ma_de}', index=True, index_label='STT'),
                         file_name=f"chi_tiet_de_{current_ma_de}_{current_nam_thi}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -349,12 +337,18 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
                         p2_correct=p2_correct,
                         p2_total=p2_total,
                         comparison_data=detail_df,
-                        model_name=model_choice
+                        model_name=model_choice,
+                        latency_sec=latency_sec,
+                        token_in=token_in,
+                        token_out=token_out,
+                        token_thought=token_thought,
+                        cost_vnd=cost_vnd,
+                        source=source_type
                     )
                     if saved:
-                        st.caption(f"🍃 Đã lưu Đề {current_ma_de} (Năm {current_nam_thi}) vào MongoDB (ID: `{msg}`)!")
+                        st.caption(f":material/database: Đã lưu Đề {current_ma_de} (Năm {current_nam_thi}) vào MongoDB (ID: `{msg}`)")
                     else:
-                        st.warning(f"ℹ️ MongoDB: {msg}")
+                        st.warning(f"MongoDB: {msg}")
 
                 # Nghỉ giữa các đề nếu xử lý nhiều đề để tránh nghẽn Rate Limit
                 if idx < total_files - 1:
@@ -363,7 +357,7 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
                 progress_bar.progress((idx + 1) / total_files)
 
             except Exception as e:
-                st.error(f"❌ Lỗi khi xử lý đề {pdf_file.name}: {str(e)}")
+                st.error(f"Lỗi khi xử lý đề {pdf_file.name}: {str(e)}")
 
         status_text.empty()
 
@@ -383,7 +377,7 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
 
         if all_results_summary:
             st.markdown("---")
-            st.header(f"🏆 KẾT QUẢ ĐỢT CHẤM: {ten_dot_thi}")
+            st.header(f":material/analytics: KẾT QUẢ ĐỢT CHẤM: {ten_dot_thi}")
             st.caption(f"Mã đợt thi (Batch ID): `{batch_id}`")
             summary_df = pd.DataFrame(all_results_summary)
             st.dataframe(summary_df, use_container_width=True)
@@ -400,7 +394,8 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
             excel_bytes = output_excel.getvalue()
 
             st.download_button(
-                label="📥 Tải Toàn Bộ Báo Cáo Đợt Chấm (Excel .xlsx)",
+                label="Tải Toàn Bộ Báo Cáo Đợt Chấm (Excel .xlsx)",
+                icon=":material/download:",
                 data=excel_bytes,
                 file_name=f'bao_cao_cham_thi_{batch_id}.xlsx',
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -408,5 +403,4 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
                 type="primary"
             )
 
-        st.balloons()
-        st.success(f"🎉 Hoàn tất quy trình chấm {total_files} đề thi thành công!")
+        st.success(f":material/check_circle: Hoàn tất quy trình chấm {total_files} đề thi thành công!")

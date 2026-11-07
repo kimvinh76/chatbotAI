@@ -6,9 +6,9 @@ CHỨC NĂNG:
 - Định nghĩa Schema đầu ra JSON (TypedDict) cho Phần I và Phần II.
 - Bộ phân tích JSON tự phục hồi (robust_exam_json_parser).
 - Chiến lược giải đề 2 Pha (Divide-and-Conquer) chuẩn hóa cho mọi mô hình (cả Flash và Pro):
-  + Pha 1: 24 câu trắc nghiệm Phần I + trích xuất mã đề, năm thi.
-  + Pha 2: 6 câu Đúng/Sai Phần II thuần túy (dồn 100% suy luận logic).
-  + Pha 3: Bổ sung lời giải thích lý thuyết ngắn gọn bằng Text thuần siêu nhẹ.
+  + Pha 1: 24 câu trắc nghiệm Phần I kèm giải thích + trích xuất mã đề, năm thi.
+  + Pha 2: 6 câu Đúng/Sai Phần II kèm giải thích ngắn gọn bám sát đề thi.
+- Lớp vá câu thiếu (Gap-Fill): Tự động phát hiện và truy vấn lại các câu/ý thiếu hoặc thiếu giải thích kèm ngữ cảnh đề thi.
 - Bóc tách file PDF bảng ma trận đáp án gốc của Bộ GD&ĐT (parse_answer_key_pdf, parse_full_answer_key_pdf).
 =============================================================================
 """
@@ -42,41 +42,52 @@ CẤU TRÚC ĐỀ THI TIN HỌC:
 
 QUY TẮC BẮT BUỘC:
 - Hãy giải đầy đủ cả 24 câu Phần I và toàn bộ 6 câu Phần II (gồm cả Câu 1, 2 chung và Câu 3, 4 KHMT, Câu 5, 6 THUD).
-- Phần I: dap_an chỉ là 1 ký tự duy nhất ('A', 'B', 'C' hoặc 'D'). giai_thich chứa lời giải thích ngắn gọn dưới 25 từ.
-- Phần II: Các trường y_a, y_b, y_c, y_d BẮT BUỘC CHỈ CHỨA DUY NHẤT 1 từ là 'Đúng' hoặc 'Sai' (TUYỆT ĐỐI KHÔNG mở ngoặc, không ghi kèm lý do vào trường này). Toàn bộ lời giải thích BẮT BUỘC phải điền riêng vào các trường giai_thich_a, giai_thich_b, giai_thich_c, giai_thich_d (dưới 25 từ mỗi ý, TUYỆT ĐỐI KHÔNG ĐỂ RỖNG).
-- Trả về JSON thuần tuân thủ đúng Schema. Lời giải thích phải súc tích, ngắn gọn, chuẩn xác kiến thức Tin học, không viết dông dài để tối ưu tốc độ xử lý."""
+- Phần I: dap_an chỉ là 1 ký tự duy nhất ('A', 'B', 'C' hoặc 'D'). giai_thich chứa lời giải thích ngắn gọn dưới 35 từ.
+- Phần II: Các trường y_a, y_b, y_c, y_d BẮT BUỘC CHỈ CHỨA DUY NHẤT 1 từ là 'Đúng' hoặc 'Sai' (TUYỆT ĐỐI KHÔNG mở ngoặc, không ghi kèm lý do vào trường này). Toàn bộ lời giải thích BẮT BUỘC phải điền riêng vào các trường giai_thich_a, giai_thich_b, giai_thich_c, giai_thich_d (dưới 35 từ mỗi ý, TUYỆT ĐỐI KHÔNG ĐỂ RỖNG).
+- YÊU CẦU CHẤT LƯỢNG GIẢI THÍCH HỌC THUẬT:
+  + TUYỆT ĐỐI KHÔNG giải thích sáo rỗng chung chung (CẤM các câu như: 'Căn cứ kiến thức SGK Tin học 12', 'Theo chuẩn GDPT 2018', 'Đây là đáp án đúng').
+  + Lời giải thích BẮT BUỘC phải đi thẳng vào bản chất kỹ thuật của câu hỏi:
+    * Với lý thuyết/mạng/phần cứng: Nêu rõ định nghĩa, vai trò thiết bị, tầng giao thức (TCP, IP, Router, Switch, RAM, ROM, TLS...).
+    * Với thuật toán/mã nguồn Python/C++: Mô phỏng từng bước (dry-run) biến số, điều kiện vòng lặp, giá trị trả về của hàm.
+    * Với cơ sở dữ liệu SQL: Phân tích cú pháp mệnh đề (SELECT, WHERE, JOIN, GROUP BY, HAVING) hoặc tính chất khóa chính/ngoại.
+    * Với các mệnh đề 'Sai': Chỉ rõ điểm sai logic/cú pháp và giải thích vì sao nhận định đó không chính xác.
+- Trả về JSON thuần tuân thủ đúng Schema."""
 
 
-# --- SCHEMA JSON ĐẦU RA (TYPEDDICT) ---
-# --- SCHEMA JSON ĐẦU RA (TYPEDDICT CHUẨN HÓA TIẾNG VIỆT KHÔNG DẤU, ĐẦY ĐỦ Ý NGHĨA) ---
+# --- SCHEMA JSON ĐẦU RA (TYPEDDICT CHO GEMINI API) ---
+
+# Cấu trúc 1 câu trắc nghiệm Phần I (Câu 1 đến 24)
 class CauHoiPhan1(typing.TypedDict, total=False):
-    cau_hoi: int
-    dap_an: str
-    giai_thich: str
+    cau_hoi: int       # Số thứ tự câu (1..24)
+    dap_an: str        # Ký tự A, B, C hoặc D
+    giai_thich: str    # Căn cứ giải thích ngắn
 
+# Cấu trúc 1 câu Đúng/Sai Phần II (Câu 1 đến 6, mỗi câu 4 ý a,b,c,d)
 class CauHoiPhan2(typing.TypedDict, total=False):
-    cau_hoi: int
-    y_a: str
-    y_b: str
-    y_c: str
-    y_d: str
-    giai_thich_a: str
-    giai_thich_b: str
-    giai_thich_c: str
-    giai_thich_d: str
+    cau_hoi: int       # Số thứ tự câu (1..6)
+    y_a: str           # 'Đúng' hoặc 'Sai'
+    y_b: str           # 'Đúng' hoặc 'Sai'
+    y_c: str           # 'Đúng' hoặc 'Sai'
+    y_d: str           # 'Đúng' hoặc 'Sai'
+    giai_thich_a: str  # Lời giải thích ý a
+    giai_thich_b: str  # Lời giải thích ý b
+    giai_thich_c: str  # Lời giải thích ý c
+    giai_thich_d: str  # Lời giải thích ý d
 
+# Schema hợp nhất toàn bài thi (kết quả hoàn chỉnh sau khi ghép Pha 1 + Pha 2)
 class BaiGiaiDeThi(typing.TypedDict, total=False):
     nam_thi: int
     ma_de: str
     phan_1: list[CauHoiPhan1]
     phan_2: list[CauHoiPhan2]
 
-# Wrapper chia pha giải đề cho Flash (kế thừa cấu trúc câu hỏi chuẩn)
+# Schema gọi API Pha 1: Bóc tách mã đề, năm thi và giải duy nhất 24 câu Phần I
 class BaiGiaiPhan1(typing.TypedDict, total=False):
     nam_thi: int
     ma_de: str
     phan_1: list[CauHoiPhan1]
 
+# Schema gọi API Pha 2: Giải duy nhất 6 câu Phần II (gồm Đúng/Sai và giải thích bám sát đề thi)
 class BaiGiaiPhan2(typing.TypedDict, total=False):
     phan_2: list[CauHoiPhan2]
 
@@ -180,8 +191,6 @@ def _is_max_tokens(resp):
 
 
 def _generate_json(model_name, schema, contents, tag, temperature=0.1, token_steps=(8192, 24576)):
-    """Gọi AI và parse JSON. Nếu JSON lỗi/bị cắt (hết token, thường do 'suy nghĩ' chiếm hết), tự thử lại
-    với mức trần token lớn hơn. Chỉ tốn thêm tiền khi thực sự cần thử lại."""
     last_err, fallback = None, None
     for i, mt in enumerate(token_steps):
         model = genai.GenerativeModel(
@@ -200,7 +209,7 @@ def _generate_json(model_name, schema, contents, tag, temperature=0.1, token_ste
             truncated = _is_max_tokens(resp)
             parsed = robust_exam_json_parser(resp.text)
             if truncated and i < len(token_steps) - 1:
-                fallback = parsed  # giữ bản dở, thử lại với trần cao hơn
+                fallback = parsed  
                 continue
             return parsed
         except Exception as e:
@@ -211,139 +220,60 @@ def _generate_json(model_name, schema, contents, tag, temperature=0.1, token_ste
     raise RuntimeError(f"{tag}: AI trả JSON lỗi/bị cắt ({last_err}). Chẩn đoán: {_USAGE_LOG}")
 
 
-def enrich_p2_explanations(api_key, phan_2_items, text="", model_name="gemini-3.8-flash"):
-    """
-    Tối ưu hóa Token & Tách biệt pha suy luận:
-    Sau khi Flash đã giải xong Đúng/Sai Phần II, gọi Flash bằng PROMPT TEXT THUẦN (KHÔNG gửi PDF)
-    để viết 1 câu giải thích lý thuyết ngắn gọn (dưới 15 từ) cho mỗi ý.
-    Token vào siêu nhẹ (< 200 token), không bao giờ bị nghẽn hay ảo giác.
-    """
-    if not phan_2_items:
-        return phan_2_items
-
-    summary_lines = []
-    for it in phan_2_items:
-        c = it.get("cau_hoi")
-        summary_lines.append(f"Câu {c}: ý a={it.get('y_a')}, ý b={it.get('y_b')}, ý c={it.get('y_c')}, ý d={it.get('y_d')}")
-
-    prompt = f"""Dưới đây là đáp án ĐÚNG/SAI của 6 câu hỏi Phần II môn Tin học THPT:
-{chr(10).join(summary_lines)}
-
-YÊU CẦU:
-Hãy viết 1 câu giải thích lý thuyết ngắn gọn (dưới 15 từ) cho từng ý a, b, c, d của mỗi câu trên để nêu rõ căn cứ kiến thức.
-Trả về JSON tuân thủ đúng Schema BaiGiaiPhan2 (điền vào các trường giai_thich_a, giai_thich_b, giai_thich_c, giai_thich_d)."""
-
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                response_schema=BaiGiaiPhan2,
-                temperature=0.1,
-                max_output_tokens=4096
-            )
-        )
-        resp = model.generate_content(prompt, request_options={"timeout": 60})
-        _record("Giải thích ngắn P2 (Text thuần)", resp)
-        parsed = robust_exam_json_parser(resp.text)
-        exp_map = {it.get("cau_hoi"): it for it in parsed.get("phan_2", []) if isinstance(it, dict)}
-
-        for it in phan_2_items:
-            c = it.get("cau_hoi")
-            exp_it = exp_map.get(c, {})
-            for k in "abcd":
-                exp_val = str(exp_it.get(f"giai_thich_{k}", "")).strip()
-                if exp_val and len(exp_val) > 3:
-                    it[f"giai_thich_{k}"] = exp_val
-                elif not it.get(f"giai_thich_{k}"):
-                    val_yn = str(it.get(f"y_{k}", "Đúng")).strip()
-                    it[f"giai_thich_{k}"] = f"Khẳng định này là {val_yn.lower()} theo kiến thức Tin học chuẩn."
-    except Exception:
-        for it in phan_2_items:
-            for k in "abcd":
-                if not it.get(f"giai_thich_{k}"):
-                    val_yn = str(it.get(f"y_{k}", "Đúng")).strip()
-                    it[f"giai_thich_{k}"] = f"Khẳng định này là {val_yn.lower()} theo kiến thức Tin học chuẩn."
-
-    return phan_2_items
-
-
 def _call_gemini_api_base(api_key, text, ma_de, nam_thi="2025", pdf_bytes=None, model_name="gemini-3.8-flash"):
-    """
-    Gửi nội dung đề thi sang Gemini để giải đề tự động và trả về cấu trúc JSON đầy đủ 48 câu/ý.
-    Áp dụng chiến lược 2 Pha (Divide-and-Conquer) chuẩn hóa cho mọi mô hình (cả Flash và Pro):
-      + Pha 1: Giải duy nhất Phần I (24 câu) kèm giải thích ngắn, trích xuất năm thi, mã đề.
-      + Pha 2: Giải duy nhất Phần II (6 câu Đúng/Sai thuần túy), dồn 100% năng lực suy luận.
-      + Pha 3: Bổ sung lời giải thích lý thuyết ngắn gọn cho Phần II bằng Text thuần siêu nhẹ.
-    """
     genai.configure(api_key=api_key)
     tag_prefix = "Pro" if "pro" in model_name.lower() else "Flash"
-
-    # Pha 1: Giải duy nhất Phần I (24 câu trắc nghiệm) + bóc tách mã đề, năm thi
-    m1 = genai.GenerativeModel(
-        model_name=model_name,
-        system_instruction=SYSTEM_PROMPT,
-        generation_config=genai.GenerationConfig(
-            response_mime_type="application/json",
-            response_schema=BaiGiaiPhan1,
-            temperature=0.1,
-            max_output_tokens=8192
-        )
-    )
+    # PHA 1: BÓC TÁCH MÃ ĐỀ, NĂM THI VÀ GIẢI DUY NHẤT 24 CÂU TRẮC NGHIỆM PHẦN I
     c1 = []
     if pdf_bytes:
+        # Nhánh 1 (Kênh AI Vision): Đóng gói byte nhị phân để mô hình đọc trực quan 4 trang PDF scan
         c1.append({"mime_type": "application/pdf", "data": pdf_bytes})
         prompt_p1 = f"""Tài liệu PDF đính kèm là ĐỀ THI gồm 4 TRANG (Mã dự kiến: {ma_de}).
-YÊU CẦU:
-1. Đọc kỹ phần đầu trang 1 để xác định chính xác NĂM THI (vd: 2025 hoặc 2026) và MÃ ĐỀ THI.
-2. Giải DUY NHẤT PHẦN I gồm ĐẦY ĐỦ TOÀN BỘ 24 CÂU TRẮC NGHIỆM (từ Câu 1 đến Câu 24, trải dài qua trang 1, 2, 3).
-BẮT BUỘC giải đủ cả 24 câu, dap_an chỉ là 1 ký tự A, B, C hoặc D. Lời giải thích súc tích dưới 20 từ mỗi câu."""
+ YÊU CẦU:
+ 1. Đọc kỹ phần đầu trang 1 để xác định chính xác NĂM THI (vd: 2025 hoặc 2026) và MÃ ĐỀ THI.
+ 2. Giải DUY NHẤT PHẦN I gồm ĐẦY ĐỦ TOÀN BỘ 24 CÂU TRẮC NGHIỆM (từ Câu 1 đến Câu 24, trải dài qua trang 1, 2, 3).
+ BẮT BUỘC giải đủ cả 24 câu, dap_an chỉ là 1 ký tự A, B, C hoặc D. Lời giải thích súc tích dưới 20 từ mỗi câu."""
     else:
+        # Nhánh 2 (Kênh Digital Text): Nạp văn bản số trích xuất từ pdfplumber để tối ưu tốc độ và token
         prompt_p1 = f"""Đọc kỹ tiêu đề để xác định NĂM THI và MÃ ĐỀ THI (dự kiến: {ma_de}).
-Hãy giải DUY NHẤT PHẦN I gồm TOÀN BỘ 24 CÂU TRẮC NGHIỆM (từ Câu 1 đến 24).
-Lời giải thích súc tích dưới 20 từ mỗi câu:\n\n--- NỘI DUNG ĐỀ THI ---\n{text}"""
+ Hãy giải DUY NHẤT PHẦN I gồm TOÀN BỘ 24 CÂU TRẮC NGHIỆM (từ Câu 1 đến 24).
+ Lời giải thích súc tích dưới 20 từ mỗi câu:\n\n--- NỘI DUNG ĐỀ THI ---\n{text}"""
     c1.append(prompt_p1)
-    r1 = None
-    _record(f"{tag_prefix} Pha 1 (24 câu P1)", r1)
+    # Thực thi suy luận Pha 1 áp dụng Logit Masking với Schema BaiGiaiPhan1
     parsed_p1 = _generate_json(model_name, BaiGiaiPhan1, c1, f"{tag_prefix} Pha 1 (24 câu P1)")
     
-    # Khoảng nghỉ an toàn chống vượt ngưỡng RPM
+    # Khoảng nghỉ an toàn chủ động chống vượt ngưỡng Rate Limit 
     time.sleep(1.2)
-
-    # Pha 2: Giải duy nhất Phần II (6 câu Đúng/Sai thuần túy, dồn 100% suy luận không bị phân tâm viết văn)
+    # PHA 2: DỒN TOÀN BỘ SUY LUẬN CHO 6 CÂU ĐÚNG/SAI PHẦN II (KÈM GIẢI THÍCH)
     c2 = []
     if pdf_bytes:
+        # Nhánh 1 (Kênh AI Vision): Đọc trực quan trang 3 và trang 4 của đề thi scan
         c2.append({"mime_type": "application/pdf", "data": pdf_bytes})
         prompt_p2 = f"""Tài liệu PDF đính kèm là ĐỀ THI gồm 4 TRANG (Mã dự kiến: {ma_de}).
-HÃY ĐỌC KỸ TRANG 3 VÀ TRANG 4 ĐỂ GIẢI 6 CÂU HỎI CỦA PHẦN II (ĐÚNG/SAI):
-- Câu 1, 2: Phần chung (ở cuối trang 3 và đầu trang 4).
-- Câu 3, 4: Phần riêng Khoa học máy tính (ở trang 4).
-- Câu 5, 6: Phần riêng Tin học ứng dụng (ở trang 4).
-YÊU CẦU BẮT BUỘC:
-1. Đánh giá 'Đúng' hoặc 'Sai' cho từng ý a, b, c, d của cả 6 câu (đánh số cau_hoi từ 1 đến 6).
-2. TUYỆT ĐỐI KHÔNG GIẢI THÍCH, KHÔNG VIẾT GÌ KHÁC ngoài 'Đúng' hoặc 'Sai' vào y_a, y_b, y_c, y_d.
-Trả về JSON tuân thủ đúng Schema BaiGiaiPhan2."""
+ HÃY ĐỌC KỸ TRANG 3 VÀ TRANG 4 ĐỂ GIẢI 6 CÂU HỎI CỦA PHẦN II (ĐÚNG/SAI):
+ - Câu 1, 2: Phần chung (ở cuối trang 3 và đầu trang 4).
+ - Câu 3, 4: Phần riêng Khoa học máy tính (ở trang 4).
+ - Câu 5, 6: Phần riêng Tin học ứng dụng (ở trang 4).
+ YÊU CẦU BẮT BUỘC:
+ 1. Đánh giá 'Đúng' hoặc 'Sai' cho từng ý a, b, c, d của cả 6 câu (đánh số cau_hoi từ 1 đến 6).
+ 2. Điền lời giải thích ngắn gọn (dưới 25 từ) nêu rõ căn cứ lý thuyết vào các trường giai_thich_a, giai_thich_b, giai_thich_c, giai_thich_d.
+ Trả về JSON tuân thủ đúng Schema BaiGiaiPhan2."""
     else:
+        # Nhánh 2 (Kênh Digital Text): Suy luận logic dựa trên chuỗi văn bản trích xuất
         prompt_p2 = f"""Hãy giải TOÀN BỘ 6 CÂU HỎI CỦA PHẦN II (từ câu 1 đến 6, mỗi câu đủ 4 ý a, b, c, d) từ đề thi dưới đây.
-Đánh giá 'Đúng' hoặc 'Sai' cho từng ý. TUYỆT ĐỐI KHÔNG GIẢI THÍCH:
-\n--- NỘI DUNG ĐỀ THI ---\n{text}"""
+ Đánh giá 'Đúng' hoặc 'Sai' và kèm lời giải thích ngắn gọn (dưới 25 từ) cho mỗi ý.
+ \n--- NỘI DUNG ĐỀ THI ---\n{text}"""
     c2.append(prompt_p2)
-    r2 = None
-    _record(f"{tag_prefix} Pha 2 (6 câu P2 Đúng/Sai)", r2)
-    parsed_p2 = _generate_json(model_name, BaiGiaiPhan2, c2, f"{tag_prefix} Pha 2 (6 câu P2 Đúng/Sai)")
-    
-    # Pha 3: Bổ sung giải thích ngắn gọn bằng Text thuần sau khi đã có đủ Đúng/Sai (cực nhanh, không tốn token PDF)
-    p2_list = parsed_p2.get("phan_2", []) if isinstance(parsed_p2, dict) else []
-    if p2_list:
-        parsed_p2["phan_2"] = enrich_p2_explanations(api_key, p2_list, text=text, model_name=model_name)
 
-    # Ghép kết quả hoàn chỉnh
+    # Thực thi suy luận Pha 2 áp dụng Logit Masking với Schema BaiGiaiPhan2
+    parsed_p2 = _generate_json(model_name, BaiGiaiPhan2, c2, f"{tag_prefix} Pha 2 (6 câu P2 Đúng/Sai)")
+
+    # Ghép hợp nhất kết quả hoàn chỉnh từ 2 pha
     return {
         "nam_thi": parsed_p1.get("nam_thi") or int(nam_thi),
         "ma_de": parsed_p1.get("ma_de") or str(ma_de),
         "phan_1": parsed_p1.get("phan_1", []),
-        "phan_2": parsed_p2.get("phan_2", [])
+        "phan_2": parsed_p2.get("phan_2", []) if isinstance(parsed_p2, dict) else []
     }
 
 
@@ -358,10 +288,12 @@ def _valid_yn(v):
 
 
 def _p2_score(it):
-    """Điểm đầy đủ của 1 câu Phần II: tối đa 4 = 4 ý Đúng/Sai hợp lệ (không ép giải thích ở bước này)."""
+    """Điểm đầy đủ của 1 câu Phần II: tối đa 8 = 4 ý Đúng/Sai hợp lệ + 4 lời giải thích ngắn bám sát đề thi."""
     if not isinstance(it, dict):
         return 0
-    return sum(_valid_yn(it.get(f"y_{k}", "")) for k in "abcd")
+    score_yn = sum(_valid_yn(it.get(f"y_{k}", "")) for k in "abcd")
+    score_exp = sum(bool(str(it.get(f"giai_thich_{k}", "")).strip()) for k in "abcd")
+    return score_yn + score_exp
 
 
 def _norm_p1(items):
@@ -375,10 +307,11 @@ def _norm_p1(items):
         except Exception:
             continue
         m = re.match(r'^\s*([A-Da-d])\b', str(it.get("dap_an", "")))
-        if 1 <= c <= 24 and m and c not in out:
-            it = dict(it)
-            it["dap_an"] = m.group(1).upper()
-            out[c] = it
+        if 1 <= c <= 24 and m:
+            if c not in out or (not out[c].get("giai_thich") and it.get("giai_thich")):
+                it = dict(it)
+                it["dap_an"] = m.group(1).upper()
+                out[c] = it
     return out
 
 
@@ -422,30 +355,25 @@ def _ask_subset(model_name, schema, prompt, text, pdf_bytes, temperature):
     else:
         prompt += f"\n\n--- NỘI DUNG ĐỀ THI ---\n{text}"
     contents.append(prompt)
-    resp = None
-    _record("Vá câu thiếu", resp)
     return _generate_json(model_name, schema, contents, "Vá câu thiếu", temperature)
 
 
 def fill_missing_answers(api_key, result, text, pdf_bytes, model_name, max_rounds=2):
-    """Phát hiện câu/ý thiếu, hỏi lại riêng các câu đó (chỉ Đúng/Sai thuần túy). Sau đó tự động bổ sung giải thích lý thuyết."""
     genai.configure(api_key=api_key)
     p1 = _norm_p1(result.get("phan_1"))
     p2 = _norm_p2(result.get("phan_2"))
     temps = [0.1, 0.3, 0.5]
-
     for rnd in range(max_rounds):
-        miss1 = [c for c in range(1, 25) if c not in p1]
-        miss2 = [c for c in range(1, 7) if _p2_score(p2.get(c)) < 4]
+        miss1 = [c for c in range(1, 25) if c not in p1 or not str(p1[c].get("giai_thich", "")).strip()]
+        miss2 = [c for c in range(1, 7) if _p2_score(p2.get(c)) < 8]
         if not miss1 and not miss2:
             break
         temp = temps[min(rnd, len(temps) - 1)]
 
         if miss1:
             try:
-                prompt = (f"Đây là đề thi Tin học. CHỈ giải các câu PHẦN I có số thứ tự sau (đúng số 'Câu N' ghi trong đề): "
-                          f"{', '.join(map(str, miss1))}.\nTìm chính xác từng câu trong đề, cau_hoi = đúng số câu gốc, "
-                          f"dap_an là A/B/C/D, giải thích dưới 20 từ. Không bỏ sót câu nào trong danh sách.")
+                prompt = (f"Giải các câu PHẦN I sau: {', '.join(map(str, miss1))}. "
+                          f"Trả về cau_hoi đúng số gốc, dap_an là A/B/C/D và giải thích dưới 20 từ bám sát đề thi.")
                 got = _ask_subset(model_name, BaiGiaiPhan1, prompt, text, pdf_bytes, temp)
                 for it in _norm_p1(got.get("phan_1")).items():
                     if it[0] in miss1:
@@ -456,14 +384,11 @@ def fill_missing_answers(api_key, result, text, pdf_bytes, model_name, max_round
 
         if miss2:
             try:
-                desc = {1: "Câu 1 (Phần chung)", 2: "Câu 2 (Phần chung)",
-                        3: "Câu 3 (Phần riêng Khoa học máy tính, câu 1 của mục KHMT)",
-                        4: "Câu 4 (Phần riêng Khoa học máy tính, câu 2 của mục KHMT)",
-                        5: "Câu 5 (Phần riêng Tin học ứng dụng, câu 1 của mục THUD)",
-                        6: "Câu 6 (Phần riêng Tin học ứng dụng, câu 2 của mục THUD)"}
-                prompt = ("Đây là đề thi Tin học. CHỈ giải các câu PHẦN II (Đúng/Sai) sau, mỗi câu đủ 4 ý a, b, c, d:\n"
-                          + "\n".join(f"- {desc[c]} => cau_hoi = {c}" for c in miss2)
-                          + "\ny_a..y_d chỉ là 'Đúng' hoặc 'Sai'. TUYỆT ĐỐI KHÔNG giải thích. Trả về đúng Schema BaiGiaiPhan2.")
+                desc = {1: "Câu 1 (Chung)", 2: "Câu 2 (Chung)", 3: "Câu 3 (KHMT)", 4: "Câu 4 (KHMT)", 5: "Câu 5 (THUD)", 6: "Câu 6 (THUD)"}
+                targets = "; ".join(f"{desc[c]} -> cau_hoi={c}" for c in miss2)
+                prompt = (f"Giải các câu PHẦN II sau: {targets}. Mỗi câu đủ 4 ý a, b, c, d.\n"
+                          f"Đánh giá 'Đúng'/'Sai' (vào y_a..d) và BẮT BUỘC giải thích dưới 25 từ bám sát đề (vào giai_thich_a..d). "
+                          f"Trả về Schema BaiGiaiPhan2.")
                 got = _ask_subset(model_name, BaiGiaiPhan2, prompt, text, pdf_bytes, temp)
                 items = [it for it in (got.get("phan_2") or []) if isinstance(it, dict)]
                 for i, it in enumerate(items):
@@ -472,7 +397,7 @@ def fill_missing_answers(api_key, result, text, pdf_bytes, model_name, max_round
                     except Exception:
                         c = None
                     if c not in miss2 and len(items) == len(miss2):
-                        c = miss2[i]  # AI đánh số lệch -> ánh xạ theo thứ tự yêu cầu
+                        c = miss2[i]
                     if c in miss2 and _p2_score(it) > _p2_score(p2.get(c)):
                         it = dict(it)
                         it["cau_hoi"] = c
@@ -484,17 +409,13 @@ def fill_missing_answers(api_key, result, text, pdf_bytes, model_name, max_round
     result["phan_1"] = [p1[c] for c in sorted(p1)]
     result["phan_2"] = [p2[c] for c in sorted(p2)]
 
-    # Bổ sung giải thích lý thuyết ngắn gọn cho toàn bộ Phần II bằng Text thuần (nhẹ và chuẩn)
-    if result["phan_2"]:
-        result["phan_2"] = enrich_p2_explanations(api_key, result["phan_2"], text=text, model_name=model_name)
-
-    left1 = [c for c in range(1, 25) if c not in p1]
-    left2 = [c for c in range(1, 7) if _p2_score(p2.get(c)) < 4]
+    left1 = [c for c in range(1, 25) if c not in p1 or not str(p1[c].get("giai_thich", "")).strip()]
+    left2 = [c for c in range(1, 7) if _p2_score(p2.get(c)) < 8]
     warns = []
     if left1:
-        warns.append(f"Phần I còn thiếu câu: {', '.join(map(str, left1))}")
+        warns.append(f"Phần I còn thiếu câu hoặc thiếu giải thích: {', '.join(map(str, left1))}")
     if left2:
-        warns.append(f"Phần II còn thiếu câu: {', '.join(map(str, left2))}")
+        warns.append(f"Phần II còn thiếu ý Đúng/Sai hoặc thiếu giải thích: {', '.join(map(str, left2))}")
     if warns:
         result["canh_bao"] = warns
     else:
@@ -503,7 +424,7 @@ def fill_missing_answers(api_key, result, text, pdf_bytes, model_name, max_round
 
 
 def call_gemini_api(api_key, text, ma_de, nam_thi="2025", pdf_bytes=None, model_name="gemini-3.8-flash"):
-    """Giải đề (Flash 2 pha / Pro single-shot) rồi tự động VÁ các câu/ý AI bỏ sót bằng các lượt hỏi lại có mục tiêu."""
+    """Giải đề theo quy trình 2 Pha (Pha 1: 24 câu P1, Pha 2: 6 câu P2 kèm giải thích) rồi tự động VÁ các câu/ý hoặc giải thích AI bỏ sót bằng các lượt truy vấn mục tiêu kèm ngữ cảnh đề thi."""
     _USAGE_LOG.clear()
     result = _call_gemini_api_base(api_key, text, ma_de, nam_thi, pdf_bytes=pdf_bytes, model_name=model_name)
     if not isinstance(result, dict):

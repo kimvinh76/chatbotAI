@@ -30,8 +30,6 @@ from core.database import (
     get_all_answer_keys_dataframe,
     update_single_answer_key,
     verify_all_answer_keys_in_year,
-    cleanup_duplicate_answer_keys,
-    delete_all_answer_keys_in_year,
 )
 
 
@@ -44,54 +42,68 @@ def render_tab_keys(gemini_api_key: str, mongo_uri: str, model_choice: str):
     - mongo_uri: Chuỗi kết nối MongoDB Atlas để lưu/truy vấn đáp án.
     - model_choice: Model AI sử dụng để OCR PDF.
     """
-    st.subheader("🗄️ Ngân Hàng Đáp Án Chuẩn Của Bộ GD&ĐT")
-    st.caption(
-        "Quản lý toàn bộ 48 mã đề theo định dạng Ma trận giống đề gốc của Bộ GD&ĐT. "
-        "Dữ liệu được lưu vĩnh viễn trên MongoDB, hỗ trợ rà soát nhanh các câu bị mộc đỏ che và khóa bảo vệ 100%."
-    )
+    if "pending_matrix_year" in st.session_state:
+        st.session_state["matrix_year"] = st.session_state.pop("pending_matrix_year")
+
+    c_head1, c_head2 = st.columns([3, 1])
+    with c_head1:
+        st.subheader(":material/database: Ngân Hàng Đáp Án Chuẩn")
+        st.caption("Quản lý ngân hàng đáp án theo định dạng Ma trận chuẩn Bộ GD&ĐT.")
+    with c_head2:
+        mat_year = st.selectbox("Năm Thi Quản Lý:", ["2025", "2026", "2027", "2028"], index=0, key="matrix_year")
+
+    if "keys_flash_msg" in st.session_state:
+        f_type, f_msg = st.session_state.pop("keys_flash_msg")
+        if f_type == "success":
+            st.success(f_msg)
+        elif f_type == "warning":
+            st.warning(f_msg)
+        else:
+            st.info(f_msg)
+
+    if "keys_flash_missing" in st.session_state:
+        m_codes = st.session_state.pop("keys_flash_missing")
+        st.warning(f"Các mã chưa hoàn tất dữ liệu (cần kiểm tra/sửa tay trong Ma Trận bên dưới): **{', '.join(m_codes)}**")
 
     if not mongo_uri:
-        st.warning("⚠️ Chưa cấu hình MONGODB_URI trong file .env!")
+        st.warning("Chưa cấu hình MONGODB_URI trong file .env!")
         return
 
-    all_keys_summary_check = get_all_answer_keys_summary(mongo_uri)
-    has_existing_keys = len(all_keys_summary_check) > 0
+    # Truy vấn toàn bộ đáp án của năm đã chọn
+    df_year_all = get_all_answer_keys_dataframe(mongo_uri, nam_thi=mat_year)
+    has_data_this_year = not df_year_all.empty
 
     # =========================================================================
-    # BƯỚC 1: NẠP FILE ĐÁP ÁN GỐC (PDF / EXCEL / CSV) - CHỈ LÀM 1 LẦN
+    # NẠP FILE ĐÁP ÁN (EXCEL / PDF) - TỰ ĐỘNG THU GỌN KHI ĐÃ CÓ DỮ LIỆU
     # =========================================================================
     with st.expander(
-        "📤 Nạp File Đáp Án Gốc Vào Ngân Hàng (PDF / Excel / CSV) — Chỉ Cần Làm 1 Lần",
-        expanded=not has_existing_keys
+        f":material/upload_file: Nạp File Đáp Án (Excel / PDF) — Năm {mat_year}",
+        expanded=not has_data_this_year
     ):
-        st.caption(
-            "💡 Hệ thống tự liệt kê TẤT CẢ mã đề có trong file PDF (vd: 48 mã), "
-            "bóc tách song song theo từng đợt để không bị cắt cụt, rồi lưu hết vào MongoDB. "
-            "Các lần chấm sau không cần nạp lại file đáp án."
-        )
         col_u1, col_u2 = st.columns([3, 1])
         with col_u1:
             extra_key_file = st.file_uploader(
-                "Tải lên file Đáp án (PDF/Excel/CSV) để lưu vào ngân hàng:",
+                f"Tải lên file đáp án (.xlsx, .csv, .pdf) cho năm {mat_year}:",
                 type=['pdf', 'csv', 'xlsx', 'xls'],
-                key="extra_key_uploader"
+                key=f"extra_key_uploader_{mat_year}"
             )
         with col_u2:
-            custom_year = st.selectbox("Năm Thi Của File:", ["2025", "2026", "2027", "2028"], index=0)
+            st.write("")
+            st.write("")
             allow_force = st.checkbox(
-                "Ghi đè cả mã đã duyệt",
+                "Ghi đè mã đã khóa",
                 value=False,
-                help="Chỉ tích nếu bạn muốn hủy khóa bảo vệ và ghi đè lại toàn bộ bằng file mới."
+                help="Mặc định hệ thống luôn bảo vệ các mã đã khóa. Chỉ tích chọn nếu bạn muốn nạp đè file mới."
             )
 
-        if extra_key_file and st.button("🚀 Quét Toàn Bộ & Lưu Vào Ngân Hàng", type="primary"):
+        if extra_key_file and st.button(f"Đọc File & Lưu Vào Năm {mat_year}", icon=":material/save:", type="primary"):
             try:
                 df_ext = None
-                detected_year = custom_year
+                detected_year = mat_year
                 missing_codes = []
                 f_name_lower = extra_key_file.name.lower()
 
-                # Trường hợp 1: File bảng tính Excel / CSV
+                # Trường hợp 1: File bảng tính Excel / CSV (Miễn phí 100% API Token)
                 if f_name_lower.endswith(('.csv', '.xlsx', '.xls')):
                     res_parse = parse_answer_excel_or_csv(extra_key_file)
                     if isinstance(res_parse, tuple):
@@ -99,18 +111,13 @@ def render_tab_keys(gemini_api_key: str, mongo_uri: str, model_choice: str):
                     else:
                         df_ext, y_excel = res_parse, None
 
-                    detected_year = custom_year if custom_year != "2025" else (y_excel or custom_year)
-                    if y_excel and y_excel != custom_year and custom_year == "2025":
-                        st.info(f"📅 Tự động nhận diện năm thi: **{detected_year}** từ nội dung/tiêu đề file.")
+                    if y_excel and y_excel != mat_year:
+                        detected_year = y_excel
 
-                    if df_ext is not None and not df_ext.empty and 'Mã Đề' in df_ext.columns:
-                        all_codes = sorted(df_ext['Mã Đề'].unique().tolist())
-                        st.info(f"📑 Đã đọc thành công **{len(all_codes)} mã đề** từ file Excel/CSV: {', '.join(all_codes)}")
-
-                # Trường hợp 2: File PDF bảng in ngang mộc đỏ
+                # Trường hợp 2: File PDF bảng in ngang mộc đỏ (Xử lý qua Gemini AI Vision)
                 elif f_name_lower.endswith('.pdf'):
                     if not gemini_api_key:
-                        st.error("⚠️ Chưa cấu hình GEMINI_API_KEY trong file .env!")
+                        st.error("Chưa cấu hình GEMINI_API_KEY trong file .env!")
                         st.stop()
                     prog = st.progress(0.0)
                     prog_txt = st.empty()
@@ -119,18 +126,16 @@ def render_tab_keys(gemini_api_key: str, mongo_uri: str, model_choice: str):
                         prog.progress(min(max(p, 0.0), 1.0))
                         prog_txt.info(msg)
 
-                    # [QUAN TRỌNG] Bóc tách phân mảnh chống nghẽn và đọc xuyên mộc đỏ
                     df_ext, y_found, all_codes, missing_codes = parse_full_answer_key_pdf(
                         gemini_api_key, extra_key_file, model_name=model_choice, progress_cb=_cb
                     )
-                    detected_year = custom_year if custom_year != "2025" else (y_found or custom_year)
-                    st.info(f"📑 Phát hiện **{len(all_codes)} mã đề** trong file: {', '.join(all_codes)}")
+                    if y_found and y_found != mat_year:
+                        detected_year = y_found
 
                 if df_ext is None or df_ext.empty:
-                    st.error("❌ Không bóc tách được dữ liệu đáp án từ file.")
+                    st.error("Không bóc tách được dữ liệu đáp án từ file.")
                 else:
                     df_ext['Mã Đề'] = df_ext['Mã Đề'].map(normalize_ma_de)
-                    # [QUAN TRỌNG] Lưu vào MongoDB kèm bảo vệ mã đề đã duyệt
                     ok, msg = save_answer_keys_to_db(
                         mongo_uri, df_ext, nam_thi=detected_year,
                         source_name=extra_key_file.name, allow_overwrite_verified=allow_force
@@ -138,68 +143,90 @@ def render_tab_keys(gemini_api_key: str, mongo_uri: str, model_choice: str):
                     if ok:
                         get_all_answer_keys_dataframe.clear()
                         df_to_excel_bytes.clear()
-                        st.session_state["matrix_year"] = str(detected_year)
-                        st.success(f"🎉 {msg} (Năm {detected_year})")
+                        if str(detected_year) != str(mat_year):
+                            st.session_state["pending_matrix_year"] = str(detected_year)
+                        st.session_state["keys_flash_msg"] = ("success", f":material/check_circle: {msg}")
                         if missing_codes:
-                            st.warning(
-                                f"⚠️ Các mã chưa đọc đủ 48 câu/ý (cần kiểm tra/sửa tay trong Ma Trận bên dưới): "
-                                f"**{', '.join(missing_codes)}**"
-                            )
+                            st.session_state["keys_flash_missing"] = missing_codes
                         st.rerun()
                     else:
-                        st.error(f"❌ {msg}")
+                        st.error(f":material/error: {msg}")
             except Exception as e:
                 st.error(f"Lỗi: {e}")
 
     # =========================================================================
-    # BƯỚC 2: MA TRẬN ĐÁP ÁN TOÀN BỘ (RÀ SOÁT, SỬA CHỮA & KHÓA BẢO VỆ)
+    # BƯỚC 2: MA TRẬN ĐÁP ÁN TOÀN BỘ (RÀ SOÁT, SỬA CHỮA & KHÓA)
     # =========================================================================
     st.markdown("---")
-    c_head1, c_head2 = st.columns([2, 1])
-    with c_head1:
-        st.subheader("🧮 Ma Trận Đáp Án Toàn Bộ")
-        st.caption(
-            "Bố cục chuẩn Bộ GD&ĐT: **hàng = câu/ý**, **cột = mã đề**. "
-            "Phần I nhập A/B/C/D; Phần II nhập **Đ** (Đúng) hoặc **S** (Sai)."
-        )
-    with c_head2:
-        mat_year = st.selectbox("Chọn Năm Thi Cần Quản Lý:", ["2025", "2026", "2027", "2028"], index=0, key="matrix_year")
-
-    # Truy vấn toàn bộ đáp án của năm đã chọn
-    df_year_all = get_all_answer_keys_dataframe(mongo_uri, nam_thi=mat_year)
     if df_year_all.empty:
-        st.info(f"ℹ️ Chưa có dữ liệu đáp án năm {mat_year} trong MongoDB. Hãy mở rộng phần '📤 Nạp File Đáp Án Gốc' ở trên để nạp file PDF đáp án.")
+        st.info(f"Chưa có dữ liệu đáp án năm {mat_year} trong MongoDB. Vui lòng mở khung 'Nạp File Đáp Án' ở trên để nạp file Excel hoặc PDF.")
         return
 
     # Biến đổi thành dạng bảng Ma trận xoay chiều (Pivot Matrix)
     mat_orig = answer_df_to_matrix(df_year_all)
+
+    st.subheader(f":material/grid_on: Ma Trận Đáp Án Năm {mat_year}")
+    st.caption("Bố cục chuẩn Bộ GD&ĐT: hàng = câu/ý, cột = mã đề. Phần I: A/B/C/D; Phần II: Đ (Đúng) hoặc S (Sai).")
+    
+    # Định nghĩa danh sách 4 mã đề thực nghiệm đại diện của từng năm (khớp với Chương 3)
+    BENCHMARK_CODES = {
+        "2025": ["0501", "0504", "0510", "0511"],
+        "2026": ["0501", "0502", "0526", "0541"]
+    }
+
+    # BỘ LỌC CHẾ ĐỘ HIỂN THỊ (Giúp bảo vệ báo cáo & demo không bị bắt bẻ số lượng)
+    c_flt1, c_flt2 = st.columns([3, 2])
+    with c_flt1:
+        view_mode = st.radio(
+            "Chế độ hiển thị Ma Trận:",
+            [
+                f":material/target: 4 Mã Đề Thực Nghiệm Đồ Án ({mat_year})",
+                f":material/public: Toàn Bộ Ngân Hàng Quốc Gia ({len(mat_orig.columns)} Mã Đề)"
+            ],
+            horizontal=True,
+            key=f"view_mode_mat_{mat_year}"
+        )
+
+    # Lọc cột hiển thị theo chế độ
+    bm_codes = BENCHMARK_CODES.get(mat_year, [])
+    if view_mode.startswith(":material/target:"):
+        selected_cols = [c for c in bm_codes if c in mat_orig.columns]
+        if not selected_cols:
+            selected_cols = list(mat_orig.columns)[:4]
+        mat_display = mat_orig[selected_cols]
+    else:
+        mat_display = mat_orig
+
     summary_keys = get_all_answer_keys_summary(mongo_uri, nam_thi=mat_year)
     verified_codes = {normalize_ma_de(k.get("ma_de")) for k in summary_keys if k.get("trang_thai") == "da_xac_thuc"}
-    all_matrix_codes = set(mat_orig.columns)
+    all_matrix_codes = set(mat_display.columns)
     num_total = len(all_matrix_codes)
     num_verified = len(verified_codes & all_matrix_codes)
     num_unverified = num_total - num_verified
-    incomplete = [c for c in mat_orig.columns if (mat_orig[c] == "").sum() > 0 or len(mat_orig) < 48]
+    incomplete = [c for c in mat_display.columns if (mat_display[c].astype(str).str.strip().isin(["", "nan", "None"])).any()]
 
-    # Metrics trạng thái duyệt và rà soát
-    m_c1, m_c2, m_c3, m_c4 = st.columns(4)
-    m_c1.metric("Tổng Số Mã Đề", f"{num_total} mã")
-    m_c2.metric("🟢 Đã Duyệt (Khóa An Toàn)", f"{num_verified} mã")
-    m_c3.metric("🟡 Chưa Duyệt (Tự Động)", f"{num_unverified} mã")
-    m_c4.metric("⚠️ Cần Rà Soát (Ô trống)", f"{len(incomplete)} mã")
+    # Tóm tắt thông tin ma trận
+    m_c1, m_c2, m_c3 = st.columns(3)
+    m_c1.metric("Số Mã Đề", f"{num_total} mã")
+
+    is_all_locked = (num_verified == num_total and num_total > 0)
+    m_c2.metric("Trạng Thái", "Đã Khóa" if is_all_locked else "Chưa Khóa")
+
+    has_empty = len(incomplete) > 0
+    m_c3.metric("Dữ Liệu", "Còn Ô Trống" if has_empty else "Đầy Đủ")
 
     if incomplete:
         st.warning(
-            f"⚠️ Các mã đề còn ô trống (do mộc che hoặc trang scan mờ): **{', '.join(incomplete)}**. "
-            f"Vui lòng click trực tiếp vào ô tương ứng trong bảng bên dưới để gõ bổ sung!"
+            f"Các mã đề còn ô trống: **{', '.join(incomplete)}**. "
+            f"Vui lòng click trực tiếp vào ô tương ứng trong bảng bên dưới để điền bổ sung!"
         )
 
     # [QUAN TRỌNG] Hiển thị Ma Trận cho phép người dùng click sửa trực tiếp
     mat_edited = st.data_editor(
-        mat_orig,
+        mat_display,
         use_container_width=True,
         height=580,
-        key=f"matrix_editor_{mat_year}"
+        key=f"matrix_editor_{mat_year}_{'bm' if view_mode.startswith(':material/target:') else 'all'}"
     )
 
     # =========================================================================
@@ -208,15 +235,16 @@ def render_tab_keys(gemini_api_key: str, mongo_uri: str, model_choice: str):
     col_btn1, col_btn2 = st.columns([3, 2])
     with col_btn1:
         if st.button(
-            f"💾 Lưu & Khóa Phê Duyệt Toàn Bộ ({num_total} Mã Đề)",
+            f"Lưu & Khóa Đáp Án ({num_total} Mã Đề)",
+            icon=":material/lock:",
             type="primary",
             use_container_width=True,
-            key="btn_save_and_verify_all",
-            help="Lưu ngay các ô vừa sửa vào MongoDB và chuyển tất cả các mã đề sang trạng thái 🟢 ĐÃ DUYỆT (Khóa an toàn vĩnh viễn chống ghi đè)"
+            key=f"btn_save_and_verify_{mat_year}",
+            help="Lưu các ô vừa sửa vào MongoDB và khóa bảo vệ dữ liệu"
         ):
             changed_codes = [
-                c for c in mat_orig.columns
-                if not mat_orig[c].astype(str).str.strip().str.upper().equals(mat_edited[c].astype(str).str.strip().str.upper())
+                c for c in mat_display.columns
+                if not mat_display[c].astype(str).str.strip().str.upper().equals(mat_edited[c].astype(str).str.strip().str.upper())
             ]
             all_errors, saved = [], []
             if changed_codes:
@@ -235,48 +263,21 @@ def render_tab_keys(gemini_api_key: str, mongo_uri: str, model_choice: str):
             df_to_excel_bytes.clear()
 
             if all_errors:
-                st.error("❌ Một số ô có giá trị không hợp lệ: " + " | ".join(all_errors))
+                st.error("Một số ô có giá trị không hợp lệ: " + " | ".join(all_errors))
             else:
                 if saved:
-                    st.success(f"🛡️ Đã lưu {len(saved)} mã vừa sửa ({', '.join(saved)}) và Khóa Bảo Vệ toàn bộ {num_total} mã đề năm {mat_year} thành công!")
+                    st.success(f"Đã lưu {len(saved)} mã vừa sửa ({', '.join(saved)}) và khóa thành công!")
                 else:
-                    st.success(f"🛡️ Đã Khóa Bảo Vệ & Phê Duyệt toàn bộ {num_total} mã đề năm {mat_year} thành công (100% ĐÃ DUYỆT)!")
+                    st.success(f"Đã lưu và khóa toàn bộ {num_total} mã đề năm {mat_year} thành công!")
                 st.rerun()
 
     with col_btn2:
         st.download_button(
-            label="📊 Xuất Ma Trận (Excel)",
+            label=f"Xuất Ma Trận ({num_total} Mã Đề - Excel)",
+            icon=":material/download:",
             data=df_to_excel_bytes(mat_edited, sheet_name=f'MaTran_{mat_year}', index=True, index_label='Câu/Ý'),
             file_name=f"ma_tran_dap_an_{mat_year}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
-            key="dl_matrix_xlsx"
+            key=f"dl_matrix_xlsx_{mat_year}"
         )
-
-    # =========================================================================
-    # CÔNG CỤ QUẢN TRỊ NÂNG CAO
-    # =========================================================================
-    with st.expander("⚙️ Tùy Chọn Quản Trị Nâng Cao (Xóa Trắng Dữ Liệu Năm / Dọn Mã Trùng)"):
-        c_sub1, c_sub2 = st.columns([1, 1])
-        with c_sub1:
-            if st.button("🧹 Dọn Dẹp Mã Trùng Lặp (Gộp 3 số về 4 số)", use_container_width=True):
-                ok_clean, msg_clean = cleanup_duplicate_answer_keys(mongo_uri, nam_thi=mat_year)
-                if ok_clean:
-                    get_all_answer_keys_dataframe.clear()
-                    df_to_excel_bytes.clear()
-                    st.success(msg_clean)
-                    st.rerun()
-                else:
-                    st.error(msg_clean)
-        with c_sub2:
-            chk_confirm_del = st.checkbox(f"Xác nhận muốn xóa trắng toàn bộ đáp án năm {mat_year}", key="chk_del_all")
-            if chk_confirm_del:
-                if st.button(f"🗑️ Xóa Toàn Bộ Đáp Án Năm {mat_year}", type="secondary", use_container_width=True):
-                    ok_d, msg_d = delete_all_answer_keys_in_year(mongo_uri, mat_year)
-                    if ok_d:
-                        get_all_answer_keys_dataframe.clear()
-                        df_to_excel_bytes.clear()
-                        st.success(msg_d)
-                        st.rerun()
-                    else:
-                        st.error(msg_d)

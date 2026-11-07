@@ -24,6 +24,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # =============================================================================
+# TỰ ĐỘNG NẠP LẠI MÃ NGUỒN MỚI NHẤT KHI CHẠY TRONG TIẾN TRÌNH STREAMLIT
+# =============================================================================
+import sys
+import importlib
+
+for _mod_name in ['core.excel_utils', 'core.database', 'core.grading_logic', 'views.tab_grading', 'views.tab_history', 'views.tab_keys']:
+    if _mod_name in sys.modules:
+        try:
+            importlib.reload(sys.modules[_mod_name])
+        except Exception:
+            pass
+
+# =============================================================================
 # RE-EXPORT CÁC MODULE LÕI (ĐẢM BẢO TƯƠNG THÍCH NGƯỢC 100% VỚI CÁC SCRIPT TEST)
 # =============================================================================
 from core.pdf_utils import extract_text_from_pdf, detect_metadata_from_file_and_text
@@ -89,17 +102,59 @@ from views.tab_keys import render_tab_keys
 # CẤU HÌNH TRANG STREAMLIT
 # =============================================================================
 st.set_page_config(
-    page_title="AI Chấm Thi Tin Học 2025",
-    page_icon="🤖",
+    page_title="AI Chấm Thi Tin Học THPT",
+    page_icon=":material/smart_toy:",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# =============================================================================
+# ẨN CÁC THÀNH PHẦN MẶC ĐỊNH (NÚT DEPLOY, MENU 3 CHẤM, STATUS WIDGET / LOADER)
+# =============================================================================
+st.markdown("""
+<style>
+    /* 1. Ẩn nút Deploy góc trên bên phải */
+    .stDeployButton, [data-testid="stDeployButton"] {
+        display: none !important;
+    }
+    /* 2. Ẩn menu 3 chấm (MainMenu) góc trên bên phải */
+    #MainMenu {
+        visibility: hidden !important;
+        display: none !important;
+    }
+    /* 3. Ẩn widget trạng thái running / loader / stop button */
+    [data-testid="stStatusWidget"], [data-testid="stRunningMan"] {
+        visibility: hidden !important;
+        display: none !important;
+    }
+    /* 4. Ẩn thanh trang trí trên đỉnh trang */
+    [data-testid="stDecoration"] {
+        display: none !important;
+    }
+    /* 5. Ẩn footer Streamlit */
+    footer {
+        visibility: hidden !important;
+        display: none !important;
+    }
+
+    /* 6. ĐẢM BẢO NÚT MỞ LẠI SIDEBAR (CHEVRON >) LUÔN HIỂN THỊ RÕ RÀNG KHI ĐÓNG */
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"],
+    section[data-testid="stSidebar"] + div button,
+    header button[data-testid="stSidebarCollapseButton"] {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        z-index: 1000000 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 
 def main():
     """Hàm khởi chạy và điều phối toàn bộ ứng dụng."""
-    st.title("🤖 Trợ Lý AI Chấm Thi Tin Học THPT 2025")
-    st.caption("Hệ thống Generative AI tự động đọc đề thi scan/ảnh, giải đề độc lập, đối sánh đáp án và quản lý dữ liệu MongoDB.")
+    st.title(":material/smart_toy: Trợ Lý AI Chấm Thi Tin Học THPT")
+    st.caption("Hệ thống Generative AI tự động đọc đề thi scan/ảnh, giải đề độc lập, đối sánh đáp án và quản lý dữ liệu MongoDB Atlas.")
     st.markdown("---")
 
     # Đọc cấu hình bảo mật từ biến môi trường (.env)
@@ -110,13 +165,13 @@ def main():
     # SIDEBAR: CẤU HÌNH HỆ THỐNG & MODEL AI
     # =========================================================================
     with st.sidebar:
-        st.header("⚙️ Cấu Hình Hệ Thống")
+        st.header(":material/tune: Cấu Hình Hệ Thống")
 
         if not gemini_api_key:
-            st.error("⚠️ Chưa cấu hình GEMINI_API_KEY trong file .env!")
+            st.error("Chưa cấu hình GEMINI_API_KEY trong file .env!")
 
         st.markdown("---")
-        st.subheader("🧠 Model AI")
+        st.subheader(":material/psychology: Mô Hình AI")
         model_choice = st.selectbox(
             "Chọn Model Gemini",
             options=["gemini-3.8-flash", "gemini-3.1-pro-preview"],
@@ -125,13 +180,13 @@ def main():
         )
 
         st.markdown("---")
-        st.subheader("⚡ Tối Ưu Hệ Thống")
+        st.subheader(":material/speed: Bộ Nhớ Đệm & Tối Ưu")
         use_cache = st.checkbox(
             "Sử dụng Cache bài giải (Tiết kiệm Token)",
             value=True,
-            help="Nếu đề thi đã được AI giải trước đó, hệ thống sẽ lấy ngay từ MongoDB để không tốn chi phí gọi lại API."
+            help="Nếu bật: Lấy bài giải cũ từ MongoDB để tiết kiệm chi phí và tăng tốc độ. Nếu tắt: Ép AI đọc lại PDF và giải mới 100%."
         )
-        if st.button("🧹 Làm Mới Cache Bài Giải", help="Xóa cache bài giải cũ trong MongoDB để ép AI giải lại và cập nhật đầy đủ lời giải thích mới nhất", use_container_width=True):
+        if st.button("Làm Mới Cache Bài Giải", icon=":material/refresh:", help="Xóa sạch cache bài giải cũ trong MongoDB để ép AI giải lại", use_container_width=True):
             if mongo_uri:
                 ok_del, msg_del = delete_solved_exam_cache(mongo_uri)
                 if ok_del:
@@ -139,15 +194,26 @@ def main():
                 else:
                     st.error(msg_del)
 
-        st.info("🤖 **100% Tự Động Hóa**:\nAI tự động đọc **Năm Thi** (2025, 2026...) & **Mã Đề** trực tiếp từ trang tiêu đề PDF đề thi và đáp án.")
+        st.markdown("---")
+        st.subheader(":material/science: Chế Độ Kiểm Thử")
+        mock_mode = st.checkbox(
+            "Chế độ Mô Phỏng (0 Token API)",
+            value=False,
+            help="Chạy thử nghiệm toàn bộ giao diện chấm thi và lịch sử mà KHÔNG gọi Gemini API và KHÔNG tốn token."
+        )
+        if mock_mode:
+            st.warning("Chế độ Mô phỏng đang BẬT (0 token).")
+
+        st.markdown("---")
+       
 
     # =========================================================================
     # CÁC TAB ĐIỀU HƯỚNG GIAO DIỆN
     # =========================================================================
     tab_grad, tab_history, tab_keys = st.tabs([
-        "🚀 Chấm Thi Tự Động (Batch Grader)",
-        "📜 Lịch Sử Đợt Chấm Thi (MongoDB)",
-        "🗄️ Ngân Hàng Đáp Án Chuẩn (Answer Keys)"
+        ":material/fact_check: Chấm Thi Tự Động",
+        ":material/history: Lịch Sử Đợt Chấm",
+        ":material/database: Ngân Hàng Đáp Án Chuẩn"
     ])
 
     with tab_grad:
@@ -155,7 +221,8 @@ def main():
             gemini_api_key=gemini_api_key,
             mongo_uri=mongo_uri,
             model_choice=model_choice,
-            use_cache=use_cache
+            use_cache=use_cache,
+            mock_mode=mock_mode
         )
 
     with tab_history:

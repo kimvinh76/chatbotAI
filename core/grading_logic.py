@@ -16,19 +16,15 @@ CHỨC NĂNG:
 """
 
 import re
+import html
 import pandas as pd
+import streamlit as st
 
 
 def build_comparison_and_detail_df(ai_data, answer_key_df=None, ma_de_hien_tai="", file_name=""):
-    """
-    Trích xuất toàn bộ tất cả câu trả lời của AI và đối sánh với đáp án chuẩn (nếu có).
-    Đảm bảo duyệt đủ 24 câu Phần I và 6 câu (24 ý) Phần II ra DataFrame chi tiết.
-    Trả về: (DataFrame_chi_tiết, có_đáp_án_đối_sánh_hay_không)
-    """
     results = []
     has_key = False
     df_filtered = pd.DataFrame()
-    
     if answer_key_df is not None and not answer_key_df.empty:
         ma_de_str = str(ma_de_hien_tai).strip()
         ma_de_clean = ma_de_str.lstrip('0')
@@ -39,17 +35,14 @@ def build_comparison_and_detail_df(ai_data, answer_key_df=None, ma_de_hien_tai="
         ]
         if not df_filtered.empty:
             has_key = True
-
-    # Chuẩn hóa bài làm của AI thành Map tra cứu (Tự động khử trùng lặp câu hỏi nếu AI sinh 2 lần)
     ai_p1_map = {}
     for item in ai_data.get("phan_1", []):
         c_num = item.get("cau_hoi")
         if c_num and c_num not in ai_p1_map:
             ai_p1_map[c_num] = item
-
     ai_p2_map = {}
     raw_p2_items = ai_data.get("phan_2", [])
-    # Nếu AI sinh đủ 6 câu nhưng bị lặp số câu 1, 2 (do chia Phần Chung, KHMT, THUD): tự động map theo thứ tự 1..6
+
     p2_c_nums = [it.get("cau_hoi") for it in raw_p2_items if isinstance(it, dict)]
     if len(raw_p2_items) == 6 and len(set(p2_c_nums)) < 6:
         for idx, item in enumerate(raw_p2_items):
@@ -59,8 +52,7 @@ def build_comparison_and_detail_df(ai_data, answer_key_df=None, ma_de_hien_tai="
             c_num = item.get("cau_hoi")
             if c_num and c_num not in ai_p2_map:
                 ai_p2_map[c_num] = item
-
-    # 1. Trích xuất Phần 1: BẮT BUỘC DUYỆT ĐỦ 24 CÂU CHUẨN (Từ Câu 1 đến Câu 24)
+    # Trích xuất Phần 1:DUYỆT ĐỦ 24 CÂU CHUẨN 
     for cau in range(1, 25):
         if cau in ai_p1_map:
             item = ai_p1_map[cau]
@@ -74,13 +66,14 @@ def build_comparison_and_detail_df(ai_data, answer_key_df=None, ma_de_hien_tai="
         
         dap_an_chuan = "-"
         ket_qua = "Chưa đối sánh"
+          # So khớp trực tiếp với đáp án chuẩn của Bộ GD&ĐT
         if has_key:
             match = df_filtered[(df_filtered['Phần'] == 1) & (df_filtered['Câu'] == cau)]
             if not match.empty:
                 raw_chuan = str(match.iloc[0]['Đáp Án']).strip().upper()
                 m_chuan = re.search(r'[A-D]', raw_chuan)
                 dap_an_chuan = m_chuan.group(0) if m_chuan else raw_chuan
-                ket_qua = "✅ Đúng" if (dap_an_ai == dap_an_chuan) else "❌ Sai"
+                ket_qua = "Đúng" if (dap_an_ai == dap_an_chuan) else "Sai"
             else:
                 ket_qua = "Chưa có đáp án"
                 
@@ -168,7 +161,7 @@ def build_comparison_and_detail_df(ai_data, answer_key_df=None, ma_de_hien_tai="
                     else:
                         dap_an_chuan = val_chuan.capitalize()
                         
-                    ket_qua = "✅ Đúng" if (dap_an_ai == dap_an_chuan) else "❌ Sai"
+                    ket_qua = "Đúng" if (dap_an_ai == dap_an_chuan) else "Sai"
                 else:
                     ket_qua = "Chưa có đáp án"
                     
@@ -188,3 +181,69 @@ def build_comparison_and_detail_df(ai_data, answer_key_df=None, ma_de_hien_tai="
     if not df_res.empty:
         df_res.index = range(1, len(df_res) + 1)
     return df_res, has_key
+
+
+def render_comparison_detail_table(detail_df: pd.DataFrame, key_suffix: str = ""):
+    """
+    Hiển thị Bảng Lưới (DataGrid) duy nhất, đồng bộ 100% cho cả Tab 1 và Tab 2.
+    - Cột Giải Thích AI được đưa lên vị trí trung tâm với độ rộng lớn nhất để không bao giờ bị cắt chữ.
+    - Lọc bỏ các cột lặp lại (Mã Đề, Tên File) để giải phóng diện tích màn hình.
+    """
+    if detail_df is None or detail_df.empty:
+        st.info("Chưa có dữ liệu chi tiết câu hỏi.")
+        return
+
+    # Chuẩn bị DataFrame hiển thị gọn gàng, tinh tế
+    display_rows = []
+    for idx, row in detail_df.reset_index(drop=True).iterrows():
+        stt = idx + 1
+        raw_phan = str(row.get("Phần", ""))
+        p_prefix = "P1" if "Phần I" in raw_phan or raw_phan == "1" else "P2"
+        
+        raw_cau = str(row.get("Câu", ""))
+        m_c = re.search(r'Câu\s*(\d+)', raw_cau, re.IGNORECASE)
+        c_num = m_c.group(1) if m_c else raw_cau
+        
+        y_val = str(row.get("Ý", "")).strip()
+        if y_val:
+            cau_y = f"{p_prefix} - Câu {c_num} ({y_val})"
+        else:
+            cau_y = f"{p_prefix} - Câu {c_num}"
+
+        display_rows.append({
+            "STT": stt,
+            "Câu / Ý": cau_y,
+            "Giải Thích Chi Tiết Của AI": str(row.get("Giải Thích AI", "") or ""),
+            "AI Chọn": str(row.get("AI Chọn", "")),
+            "Đáp Án Đúng": str(row.get("Đáp Án Chuẩn", "")),
+            "Kết Quả": str(row.get("Kết Quả", "")),
+        })
+
+    grid_df = pd.DataFrame(display_rows)
+    grid_df.set_index("STT", inplace=True)
+
+    style_func = lambda val: 'color: #4ade80; font-weight: bold' if 'Đúng' in str(val) else (
+        'color: #f87171; font-weight: bold' if 'Sai' in str(val) else ''
+    )
+    if hasattr(grid_df.style, 'map'):
+        styled_df = grid_df.style.map(style_func, subset=['Kết Quả'])
+    else:
+        styled_df = grid_df.style.applymap(style_func, subset=['Kết Quả'])
+
+    st.dataframe(
+        styled_df,
+        use_container_width=True,
+        height=540,
+        key=f"grid_detail_{key_suffix}" if key_suffix else None,
+        column_config={
+            "Câu / Ý": st.column_config.TextColumn("Câu / Ý", width=115),
+            "Giải Thích Chi Tiết Của AI": st.column_config.TextColumn(
+                "Giải Thích Chi Tiết Của AI",
+                width=950,
+                help="Phân tích, lập luận logic và đối soát học thuật của AI",
+            ),
+            "AI Chọn": st.column_config.TextColumn("AI Chọn", width=80),
+            "Đáp Án Đúng": st.column_config.TextColumn("Đáp Án Đúng", width=105),
+            "Kết Quả": st.column_config.TextColumn("Kết Quả", width=85),
+        }
+    )

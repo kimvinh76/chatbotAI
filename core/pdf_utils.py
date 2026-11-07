@@ -32,22 +32,28 @@ def extract_text_from_pdf(pdf_file):
 def detect_metadata_from_file_and_text(pdf_file, text=""):
     """
     Tự động nhận diện Mã Đề và Năm Thi từ nội dung văn bản trang đầu hoặc từ tên file PDF.
-    Ví dụ: 'ĐỀ THI TỐT NGHIỆP THPT NĂM 2026 - Mã đề 0504' -> Mã: '0504', Năm: '2026'.
+    Ví dụ: 'ĐỀ THI TỐT NGHIỆP THPT NĂM 2025 - Mã đề 0504' -> Mã: '0504', Năm: '2025'.
+    Hàm luôn chạy trước: nếu đề scan (text rỗng), tự động bóc tách từ tên file PDF.
     """
     file_name = pdf_file.name if hasattr(pdf_file, 'name') else str(pdf_file)
     
-    # 1. Nhận diện năm thi (mặc định 2025 nếu không tìm thấy)
+    # . Nhận diện năm thi: Ưu tiên đọc từ văn bản đề -> Dự phòng đọc từ tên file (khi text rỗng)
     detected_year = "2025"
-    m_year = re.search(r'NĂM\s+(202[4-9]|203\d)', text, re.IGNORECASE) or re.search(r'\b(202[4-9]|203\d)\b', file_name)
+    m_year = re.search(r'NĂM\s+(202[4-9]|203\d)', text, re.IGNORECASE) or re.search(r'(202[4-9]|203\d)', file_name)
     if m_year:
         detected_year = str(m_year.group(1))
         
-    # 2. Nhận diện mã đề thi
+    # . Nhận diện mã đề: Ưu tiên tìm cụm 'Mã đề: ...' trong text -> Dự phòng lấy số từ tên file
+    file_name_no_year = re.sub(r'202[4-9]|203\d', '', file_name)
     detected_code = ""
-    m_code = re.search(r'Mã\s+đề(?:\s+thi)?\s*[:\.]?\s*(\d{3,4})', text, re.IGNORECASE) or re.search(r'(\d{3,4})', file_name)
+    m_code = re.search(r'Mã\s+đề(?:\s+thi)?\s*[:\.]?\s*(\d{3,4})', text, re.IGNORECASE) or re.search(r'(\d{3,4})', file_name_no_year)
     if m_code:
         detected_code = normalize_ma_de(m_code.group(1))
     else:
-        detected_code = normalize_ma_de(file_name.split('.')[0])
+        # Nếu không khớp regex, chuẩn hóa từ phần đầu tên file
+        detected_code = normalize_ma_de(file_name_no_year.split('.')[0])
         
     return detected_code, detected_year
+   
+
+   

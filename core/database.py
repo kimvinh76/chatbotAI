@@ -102,9 +102,12 @@ def save_answer_keys_to_db(mongo_uri, df_answers, nam_thi="2025", source_name=""
         get_all_answer_keys_summary.clear()
         get_all_answer_keys_dataframe.clear()
         df_to_excel_bytes.clear()
-        msg = f"Đã đồng bộ {count} mã đề vào ngân hàng đáp án."
-        if protected_list:
-            msg += f" 🛡️ Đã bảo vệ {len(protected_list)} mã đề đã duyệt ({', '.join(protected_list)}) không bị ghi đè!"
+        if count > 0 and not protected_list:
+            msg = f"Đã nạp thành công {count} mã đề vào ngân hàng đáp án Năm {nam_thi}."
+        elif count > 0 and protected_list:
+            msg = f"Đã nạp {count} mã đề mới. Giữ an toàn {len(protected_list)} mã đề đã duyệt trước đó."
+        else:
+            msg = f"Toàn bộ {len(protected_list)} mã đề đã có sẵn trong ngân hàng đáp án Năm {nam_thi} và đang được bảo vệ an toàn."
         return True, msg
     except Exception as e:
         return False, str(e)
@@ -244,7 +247,7 @@ def update_single_answer_key(mongo_uri, ma_de, nam_thi, df_items):
         get_all_answer_keys_summary.clear()
         get_all_answer_keys_dataframe.clear()
         df_to_excel_bytes.clear()
-        return True, f"🛡️ Đã KHÓA BẢO VỆ & cập nhật đáp án chuẩn cho Mã đề {ma_de} (Năm {nam_thi}) thành công!"
+        return True, f"Đã KHÓA BẢO VỆ & cập nhật đáp án chuẩn cho Mã đề {ma_de} (Năm {nam_thi}) thành công!"
     except Exception as e:
         return False, str(e)
 
@@ -300,14 +303,14 @@ def cleanup_duplicate_answer_keys(mongo_uri, nam_thi=None):
         get_all_answer_keys_summary.clear()
         get_all_answer_keys_dataframe.clear()
         df_to_excel_bytes.clear()
-        return True, f"🧹 Đã dọn dẹp và chuẩn hóa {cleaned_count} mã đề trùng lặp về định dạng 4 chữ số chuẩn!"
+        return True, f"Đã dọn dẹp và chuẩn hóa {cleaned_count} mã đề trùng lặp về định dạng 4 chữ số chuẩn!"
     except Exception as e:
         return False, str(e)
 
 
 def verify_all_answer_keys_in_year(mongo_uri, nam_thi):
     """
-    Đánh dấu toàn bộ mã đề của năm thi này sang trạng thái 'da_xac_thuc' (🟢 ĐÃ DUYỆT / KHÓA BẢO VỆ).
+    Đánh dấu toàn bộ mã đề của năm thi này sang trạng thái 'da_xac_thuc' (ĐÃ DUYỆT / KHÓA BẢO VỆ).
     """
     if not mongo_uri:
         return False, "Chưa kết nối DB"
@@ -326,7 +329,7 @@ def verify_all_answer_keys_in_year(mongo_uri, nam_thi):
         get_all_answer_keys_summary.clear()
         get_all_answer_keys_dataframe.clear()
         df_to_excel_bytes.clear()
-        return True, f"🛡️ Đã phê duyệt và khóa bảo vệ toàn bộ {res.modified_count} mã đề (Năm {nam_thi})!"
+        return True, f"Đã phê duyệt và khóa bảo vệ toàn bộ {res.modified_count} mã đề (Năm {nam_thi})!"
     except Exception as e:
         return False, str(e)
 
@@ -545,7 +548,7 @@ def delete_batch_from_db(mongo_uri, batch_id):
 # COLLECTION 4: exam_results (Kết Quả Chi Tiết Từng Bài Thi)
 # ==============================================================================
 
-def save_to_mongodb(mongo_uri, data, ma_de, nam_thi, ten_file="", batch_id="", loai_tai_lieu="scan_image", score=None, correct_count=0, total_count=0, p1_correct=0, p1_total=24, p2_correct=0, p2_total=24, comparison_data=None, model_name=""):
+def save_to_mongodb(mongo_uri, data, ma_de, nam_thi, ten_file="", batch_id="", loai_tai_lieu="scan_image", score=None, correct_count=0, total_count=0, p1_correct=0, p1_total=24, p2_correct=0, p2_total=24, comparison_data=None, model_name="", latency_sec=0.0, token_in=0, token_out=0, token_thought=0, cost_vnd=0.0, source="API"):
     """
     Lưu kết quả chi tiết từng bài thi vào collection 'exam_results'.
     """
@@ -571,6 +574,17 @@ def save_to_mongodb(mongo_uri, data, ma_de, nam_thi, ten_file="", batch_id="", l
             "nam_thi": str(nam_thi),
             "model_ai": str(model_name),
             "loai_tai_lieu": str(loai_tai_lieu),
+            "nguon": str(source),
+            "thoi_gian_xu_ly_s": float(latency_sec) if latency_sec is not None else 0.0,
+            "latency_sec": float(latency_sec) if latency_sec is not None else 0.0,
+            "token_vao": int(token_in) if token_in is not None else 0,
+            "token_in": int(token_in) if token_in is not None else 0,
+            "token_ra": int(token_out) if token_out is not None else 0,
+            "token_out": int(token_out) if token_out is not None else 0,
+            "token_nghi": int(token_thought) if token_thought is not None else 0,
+            "token_thought": int(token_thought) if token_thought is not None else 0,
+            "chi_phi_vnd": float(cost_vnd) if cost_vnd is not None else 0.0,
+            "cost_vnd": float(cost_vnd) if cost_vnd is not None else 0.0,
             "trang_thai_doi_sanh": "da_doi_sanh" if (score is not None and total_count > 0) else "chua_doi_sanh",
             "diem_so": round(float(score), 2) if score is not None else None,
             "so_cau_dung": int(correct_count) if score is not None else None,

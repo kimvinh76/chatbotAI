@@ -6,7 +6,7 @@ CHỨC NĂNG:
 - Thống kê toàn cảnh hệ thống: tổng số đợt thi, tổng bài đã chấm, phổ điểm trung bình.
 - Truy xuất tức thì dữ liệu các đợt thi cũ mà không cần tốn token AI.
 - Tải lại báo cáo Excel đa Sheet của bất kỳ đợt chấm nào trong lịch sử.
-- Chế độ xem thông minh: '⚡ Từng bài thi' (phân trang nhẹ nhàng, không lag UI) và '📄 Tất cả bài thi'.
+- Chế độ xem thông minh: 'Từng bài thi' (phân trang nhẹ nhàng, không lag UI) và 'Tất cả bài thi'.
 - Xem chi tiết từng câu hỏi, giải thích và JSON gốc bài làm của AI.
 - Quản trị xóa đợt chấm lỗi thời khỏi cơ sở dữ liệu.
 =============================================================================
@@ -22,6 +22,7 @@ from core.database import (
     delete_batch_from_db,
 )
 from core.excel_utils import df_to_excel_bytes, dict_to_multisheet_excel_bytes
+from core.grading_logic import render_comparison_detail_table
 
 
 def render_tab_history(mongo_uri: str):
@@ -31,17 +32,26 @@ def render_tab_history(mongo_uri: str):
     Tham số:
     - mongo_uri: Chuỗi kết nối MongoDB Atlas để truy vấn dữ liệu.
     """
-    st.subheader("📜 Quản Lý & Xem Lại Các Đợt Chấm Thi Trong MongoDB")
-    st.caption("Xem lại lịch sử các đợt thi đã chấm, phân tích phổ điểm và tải lại báo cáo Excel cũ mà không tốn token.")
+    st.subheader(":material/history_edu: Quản Lý & Xem Lại Các Đợt Chấm Thi")
+   
 
     if not mongo_uri:
-        st.warning("⚠️ Chưa cấu hình MONGODB_URI trong file .env!")
+        st.warning("Chưa cấu hình MONGODB_URI trong file .env!")
         return
 
     # [QUAN TRỌNG] Lấy danh sách các đợt thi (sử dụng Cache RAM trong core/database.py)
     batches = get_all_batches_from_db(mongo_uri)
     if not batches:
-        st.info("ℹ️ Chưa có đợt chấm thi nào được lưu trong cơ sở dữ liệu MongoDB.")
+        st.info("Chưa có đợt chấm thi nào được lưu trong cơ sở dữ liệu MongoDB.")
+        st.caption("Bạn có thể tạo nhanh một đợt chấm mẫu giả lập (0 token) để xem trước toàn bộ giao diện bảng biểu, thống kê và báo cáo Excel:")
+        if st.button("Tạo Đợt Chấm Mẫu Demo Cho Tab 2 (0 Token)", icon=":material/visibility:", type="primary"):
+            from core.mock_data import create_demo_batch_in_db
+            ok, b_id = create_demo_batch_in_db(mongo_uri, nam_thi="2026")
+            if ok:
+                st.success(f"Đã tạo thành công đợt chấm mẫu: {b_id}")
+                st.rerun()
+            else:
+                st.error(f"Lỗi: {b_id}")
         return
 
     # =========================================================================
@@ -72,7 +82,7 @@ def render_tab_history(mongo_uri: str):
     st.dataframe(pd.DataFrame(batch_rows), use_container_width=True)
 
     st.markdown("---")
-    st.subheader("🔍 Chi Tiết Một Đợt Chấm & Tải Lại Báo Cáo")
+    st.subheader(":material/manage_search: Chi Tiết Đợt Chấm & Tải Lại Báo Cáo")
 
     selected_batch_id = st.selectbox(
         "Chọn Đợt Chấm Cần Xem Lại:",
@@ -86,16 +96,37 @@ def render_tab_history(mongo_uri: str):
     # [QUAN TRỌNG] Lấy chi tiết các bài thi thuộc đợt thi được chọn
     exam_docs = get_batch_exam_results(mongo_uri, selected_batch_id)
     if not exam_docs:
-        st.info("ℹ️ Không tìm thấy chi tiết bài thi nào trong đợt này.")
+        st.info("Không tìm thấy chi tiết bài thi nào trong đợt này.")
         return
 
-    st.markdown(f"#### 📊 Tổng Hợp Điểm Số ({len(exam_docs)} bài thi):")
+    st.markdown(f"#### :material/analytics: Tổng Hợp Điểm Số ({len(exam_docs)} bài thi):")
 
     hist_summaries = []
     hist_details = []
     for edoc in exam_docs:
+        lat = edoc.get("thoi_gian_xu_ly_s")
+        if lat is None or lat == "":
+            lat = edoc.get("latency_sec", "-")
+
+        tin = edoc.get("token_vao")
+        if tin is None or tin == "":
+            tin = edoc.get("token_in", "-")
+
+        tout = edoc.get("token_ra")
+        if tout is None or tout == "":
+            tout = edoc.get("token_out", "-")
+
+        tth = edoc.get("token_nghi")
+        if tth is None or tth == "":
+            tth = edoc.get("token_thought", "-")
+
+        cost = edoc.get("chi_phi_vnd")
+        if cost is None or cost == "":
+            cost = edoc.get("cost_vnd", "-")
+
         hist_summaries.append({
             "Mã Đề": edoc.get("ma_de"),
+            "Năm Thi": edoc.get("nam_thi", "-"),
             "Tên File": edoc.get("ten_file"),
             "Điểm (Hệ 10)": edoc.get("diem_so"),
             "Số câu đúng": edoc.get("so_cau_dung"),
@@ -103,6 +134,12 @@ def render_tab_history(mongo_uri: str):
             "Tỷ lệ đúng (%)": edoc.get("ty_le_dung_phan_tram"),
             "P1 Trắc nghiệm": f"{edoc.get('thong_ke_phan_1', {}).get('so_cau_dung')}/{edoc.get('thong_ke_phan_1', {}).get('tong_so_cau')}",
             "P2 Đúng/Sai": f"{edoc.get('thong_ke_phan_2', {}).get('so_y_dung')}/{edoc.get('thong_ke_phan_2', {}).get('tong_so_y')}",
+            "Model AI": edoc.get("model_ai", "-"),
+            "Thời gian (s)": lat,
+            "Token Vào": tin,
+            "Token Ra": tout,
+            "Token Nghĩ": tth,
+            "Chi Phí (VNĐ)": cost,
             "Thời Gian Chấm": edoc.get("thoi_gian_cham")
         })
         for row in edoc.get("chi_tiet_doi_sanh", []):
@@ -120,7 +157,8 @@ def render_tab_history(mongo_uri: str):
     c_h1, c_h2 = st.columns([3, 1])
     with c_h1:
         st.download_button(
-            label="📥 Tải Toàn Bộ Báo Cáo Đợt Chấm (Excel .xlsx)",
+            label="Tải Toàn Bộ Báo Cáo Đợt Chấm (Excel .xlsx)",
+            icon=":material/download:",
             data=dict_to_multisheet_excel_bytes(sheet_dict),
             file_name=f'bao_cao_lich_su_{selected_batch_id}.xlsx',
             mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -128,7 +166,7 @@ def render_tab_history(mongo_uri: str):
             use_container_width=True
         )
     with c_h2:
-        if st.button(f"🗑️ Xóa Đợt Chấm {selected_batch_id}", type="secondary", use_container_width=True):
+        if st.button(f"Xóa Đợt Chấm {selected_batch_id}", icon=":material/delete:", type="secondary", use_container_width=True):
             ok_del, msg_del = delete_batch_from_db(mongo_uri, selected_batch_id)
             if ok_del:
                 st.success(msg_del)
@@ -137,20 +175,25 @@ def render_tab_history(mongo_uri: str):
                 st.error(msg_del)
 
     st.markdown("---")
-    st.subheader(f"📝 Chi Tiết Từng Bài Thi & Bài Giải AI Trong Đợt `{selected_batch_id}`")
+    st.subheader(f":material/description: Chi Tiết Từng Bài Thi & Bài Giải AI Trong Đợt `{selected_batch_id}`")
 
     # [QUAN TRỌNG] Tối ưu hóa hiển thị khi đợt có nhiều bài thi (tránh render đồng thời hàng chục bảng gây giật lag trình duyệt)
     if len(exam_docs) > 1:
-        exam_labels = [f"Đề {e.get('ma_de', 'N/A')} ({e.get('ten_file', '')}) — {e.get('diem_so', 0)}/10 điểm" for e in exam_docs]
+        exam_labels = []
+        for e in exam_docs:
+            lat = e.get("thoi_gian_xu_ly_s") if e.get("thoi_gian_xu_ly_s") is not None else e.get("latency_sec", "-")
+            cost = e.get("chi_phi_vnd") if e.get("chi_phi_vnd") is not None else e.get("cost_vnd", "-")
+            exam_labels.append(f"Đề {e.get('ma_de', 'N/A')} ({e.get('ten_file', '')}) — {e.get('diem_so', 0)}/10 điểm | {lat}s | {cost} VNĐ")
+
         view_mode = st.radio(
-            "Chế độ hiển thị bài thi:",
-            ["⚡ Từng bài thi (Khuyên dùng - Cực nhanh & nhẹ)", "📄 Tất cả bài thi cùng lúc"],
+            "Chế độ hiển thị:",
+            [":material/description: Từng bài thi", ":material/view_agenda: Tất cả bài thi"],
             horizontal=True,
             key=f"view_mode_{selected_batch_id}"
         )
-        if view_mode.startswith("⚡"):
+        if "Từng bài thi" in view_mode:
             sel_idx = st.selectbox(
-                "Chọn bài thi cần xem chi tiết & giải thích:",
+                "Chọn bài thi:",
                 range(len(exam_docs)),
                 format_func=lambda i: exam_labels[i]
             )
@@ -169,39 +212,33 @@ def render_tab_history(mongo_uri: str):
         e_score = edoc.get("diem_so")
         e_dung = edoc.get("so_cau_dung")
         e_tong = edoc.get("tong_so_cau")
+        e_lat = edoc.get("thoi_gian_xu_ly_s") if edoc.get("thoi_gian_xu_ly_s") is not None else edoc.get("latency_sec", "-")
+        e_tin = edoc.get("token_vao") if edoc.get("token_vao") is not None else edoc.get("token_in", "-")
+        e_tout = edoc.get("token_ra") if edoc.get("token_ra") is not None else edoc.get("token_out", "-")
+        e_tth = edoc.get("token_nghi") if edoc.get("token_nghi") is not None else edoc.get("token_thought", "-")
+        e_cost = edoc.get("chi_phi_vnd") if edoc.get("chi_phi_vnd") is not None else edoc.get("cost_vnd", "-")
 
-        with st.expander(f"📄 Đề {e_ma_de} (Tệp: {e_file}) — Điểm: {e_score}/10 (Đúng {e_dung}/{e_tong} câu/ý)", expanded=True):
+        with st.expander(f":material/assignment: Đề {e_ma_de} (Tệp: {e_file}) — Điểm: {e_score}/10 (Đúng {e_dung}/{e_tong} câu/ý) | {e_lat}s | {e_cost} VNĐ", expanded=True):
+            # Thanh hiển thị Metrics hiệu năng của riêng bài thi này
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Thời Gian Xử Lý", f"{e_lat} s" if e_lat != "-" else "-")
+            m2.metric("Chi Phí API", f"{e_cost} VNĐ" if e_cost != "-" else "-")
+            m3.metric("Token Vào (Prompt)", f"{e_tin:,}" if isinstance(e_tin, (int, float)) else str(e_tin))
+            m4.metric("Token Ra (Candidate)", f"{e_tout:,}" if isinstance(e_tout, (int, float)) else str(e_tout))
+            m5.metric("Token Nghĩ (Thinking)", f"{e_tth:,}" if isinstance(e_tth, (int, float)) else str(e_tth))
             chi_tiet_list = edoc.get("chi_tiet_doi_sanh", [])
             if chi_tiet_list:
                 df_e_detail = pd.DataFrame(chi_tiet_list)
                 if not df_e_detail.empty:
                     df_e_detail.index = range(1, len(df_e_detail) + 1)
-                style_func = lambda val: 'color: green; font-weight: bold' if val == '✅ Đúng' else (
-                    'color: red; font-weight: bold' if val == '❌ Sai' else ''
-                )
-                if hasattr(df_e_detail.style, 'map'):
-                    st.dataframe(df_e_detail.style.map(style_func, subset=['Kết Quả']), use_container_width=True)
-                else:
-                    st.dataframe(df_e_detail.style.applymap(style_func, subset=['Kết Quả']), use_container_width=True)
+                render_comparison_detail_table(df_e_detail, key_suffix=f"hist_{e_ma_de}_{idx_e}")
 
                 st.download_button(
-                    label=f"📊 Tải Chi Tiết Đề {e_ma_de} (Excel .xlsx)",
+                    label=f"Tải Chi Tiết Đề {e_ma_de} (Excel .xlsx)",
+                    icon=":material/download:",
                     data=df_to_excel_bytes(df_e_detail, sheet_name=f'Đề {e_ma_de}', index=True, index_label='STT'),
                     file_name=f"chi_tiet_de_{e_ma_de}_{selected_batch_id}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"dl_hist_detail_{e_ma_de}_{idx_e}",
                     use_container_width=True
-                )
-
-            bai_lam_ai = edoc.get("bai_lam_ai")
-            if bai_lam_ai:
-                st.markdown(f"**🤖 Bài Giải Gốc Của AI Đề {e_ma_de}:**")
-                st.json(bai_lam_ai)
-                json_ai_str = json.dumps(bai_lam_ai, ensure_ascii=False, indent=2)
-                st.download_button(
-                    label=f"📥 Tải File JSON Bài Giải Đề {e_ma_de}",
-                    data=json_ai_str,
-                    file_name=f"bai_giai_ai_{e_ma_de}.json",
-                    mime="application/json",
-                    key=f"dl_hist_json_{e_ma_de}_{idx_e}"
                 )

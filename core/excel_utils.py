@@ -233,13 +233,21 @@ def parse_answer_excel_or_csv(file):
         raw_cau = str(r_data[col_cau]).strip() if col_cau else str(idx_row)
         raw_phan = str(r_data[col_phan]).strip().upper() if col_phan else ''
         
-        # Nhận diện dòng chuyển phần xen kẽ trong bảng
-        if any(k in raw_cau.upper() or k in raw_phan for k in ['PHẦN II', 'PHAN II', 'PHẦN 2', 'ĐÚNG SAI', 'DUNG SAI']):
+        # Cập nhật section từ cột Phần nếu có
+        if 'II' in raw_phan or '2' in raw_phan:
             current_section = 2
-            continue
-        elif any(k in raw_cau.upper() or k in raw_phan for k in ['PHẦN I', 'PHAN I', 'PHẦN 1']):
+        elif 'I' in raw_phan or '1' in raw_phan:
             current_section = 1
-            continue
+
+        # Nhận diện dòng chuyển phần xen kẽ đứng độc lập (không có số câu)
+        m_has_num = re.search(r'\d+', raw_cau)
+        if not m_has_num:
+            if any(k in raw_cau.upper() for k in ['PHẦN II', 'PHAN II', 'PHẦN 2', 'ĐÚNG SAI', 'DUNG SAI']):
+                current_section = 2
+                continue
+            elif any(k in raw_cau.upper() for k in ['PHẦN I', 'PHAN I', 'PHẦN 1']):
+                current_section = 1
+                continue
 
         if raw_cau.lower() in ('', 'nan', 'none'):
             continue
