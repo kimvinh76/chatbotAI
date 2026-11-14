@@ -20,7 +20,7 @@ import pandas as pd
 import streamlit as st
 
 from core.pdf_utils import extract_text_from_pdf, detect_metadata_from_file_and_text
-from core.ai_grader import call_gemini_api
+from core.ai_grader import call_gemini_api, _is_valid_exp
 from core.mock_data import generate_mock_exam_solution
 from core.database import (
     get_solved_exam_cache,
@@ -30,8 +30,12 @@ from core.database import (
     save_to_mongodb,
     save_grading_batch,
 )
-from core.grading_logic import build_comparison_and_detail_df, render_comparison_detail_table
-from core.excel_utils import df_to_excel_bytes
+from core.grading_logic import (
+    build_comparison_and_detail_df,
+    render_comparison_detail_table,
+    calculate_moet_scores,
+)
+from core.excel_utils import df_to_excel_bytes, normalize_ma_de
 
 
 def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, use_cache: bool, mock_mode: bool = False):
@@ -61,7 +65,7 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
     )
 
     if st.button("Bắt Đầu Chấm Thi Hàng Loạt", icon=":material/play_circle:", use_container_width=True, type="primary"):
-        if not gemini_api_key:
+        if not gemini_api_key and not mock_mode:
             st.error("Vui lòng cấu hình GEMINI_API_KEY trong file .env trước khi chấm thi!")
             return
 
@@ -123,13 +127,13 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
                             p1_list = cached_ai.get("phan_1", [])
                             p2_list = cached_ai.get("phan_2", [])
                             is_full = (len(p1_list) == 24 and len(p2_list) == 6)
-                            # Đếm số câu có lời giải thích ở Phần I (đủ 24/24 câu)
-                            p1_exp_count = sum(bool(it.get("giai_thich")) for it in p1_list if isinstance(it, dict))
+                            # Đếm số câu có lời giải thích hợp lệ ở Phần I (đủ 24/24 câu)
+                            p1_exp_count = sum(_is_valid_exp(it.get("giai_thich")) for it in p1_list if isinstance(it, dict))
                             p1_has_exp = (p1_exp_count == 24)
-                            # Đếm số ý có lời giải thích ở Phần II (đủ 24/24 ý)
+                            # Đếm số ý có lời giải thích hợp lệ ở Phần II (đủ 24/24 ý)
                             p2_exp_count = sum(
-                                bool(it.get("giai_thich_a")) + bool(it.get("giai_thich_b")) +
-                                bool(it.get("giai_thich_c")) + bool(it.get("giai_thich_d"))
+                                _is_valid_exp(it.get("giai_thich_a")) + _is_valid_exp(it.get("giai_thich_b")) +
+                                _is_valid_exp(it.get("giai_thich_c")) + _is_valid_exp(it.get("giai_thich_d"))
                                 for it in p2_list if isinstance(it, dict)
                             )
                             p2_has_exp = (p2_exp_count == 24)
@@ -149,12 +153,12 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
                             else:
                                 st.info(
                                     f"Bài giải trong Cache của Đề {current_ma_de} chưa đạt chuẩn đầy đủ 24 câu P1 và 24 ý P2 có giải thích. "
-                                    f"Đang kích hoạt AI ({model_choice}) đọc lại đề và giải toàn diện..."
+                                    f"Đang kích hoạt AI ({model_choice.replace('-preview', '')}) đọc lại đề và giải toàn diện..."
                                 )
 
                     # Nếu chưa có bài giải hoặc cache không hợp lệ, gọi Gemini API
                     if ai_result is None:
-                        status_text.info(f"[{idx+1}/{total_files}] AI ({model_choice}) đang đọc và giải đề thi mã {current_ma_de}...")
+                        status_text.info(f"[{idx+1}/{total_files}] AI ({model_choice.replace('-preview', '')}) đang đọc và giải đề thi mã {current_ma_de}...")
                         ai_result = call_gemini_api(
                             gemini_api_key, exam_text, current_ma_de, current_nam_thi,
                             pdf_bytes=pdf_bytes, model_name=model_choice
@@ -165,7 +169,7 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
                             if ai_result.get("nam_thi"):
                                 current_nam_thi = str(ai_result["nam_thi"])
                             if ai_result.get("ma_de"):
-                                current_ma_de = str(ai_result["ma_de"])
+                                current_ma_de = normalize_ma_de(ai_result["ma_de"])
 
                         # Lưu bài giải vào Cache MongoDB để tái sử dụng
                         if mongo_uri:
@@ -245,12 +249,16 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
 
                     correct_count = len(detail_df[detail_df['Kết Quả'].astype(str).str.contains('Đúng', na=False)])
                     score = (correct_count / total_count) * 10 if total_count > 0 else 0
+                    score_khmt, score_thud, _, _ = calculate_moet_scores(detail_df)
 
                     st.success(
-                        f":material/award_star: Điểm số Đề {current_ma_de} (Năm {current_nam_thi}): "
-                        f"**{score:.2f} / 10** (Đúng {correct_count}/{total_count} câu/ý)"
+                        f":material/award_star: **Kết quả Đề {current_ma_de} (Năm {current_nam_thi}):** "
+                        f"Điểm Toàn Đề (48 đơn vị): **{score:.2f} / 10** (Đúng {correct_count}/{total_count} câu/ý) | "
+                        f"🎯 **Bộ GD (KHMT): {score_khmt:.2f} / 10** | "
+                        f"💼 **Bộ GD (THUD): {score_thud:.2f} / 10**"
                     )
                 else:
+                    score_khmt, score_thud = None, None
                     st.success(f"Đã giải xong toàn bộ câu hỏi Đề {current_ma_de} (Chưa đối sánh đáp án)")
 
                 # Tính toán thời gian thực thi (latency), thống kê Token & Chi phí dự toán
@@ -278,13 +286,15 @@ def render_tab_grading(gemini_api_key: str, mongo_uri: str, model_choice: str, u
                     "Mã Đề": current_ma_de,
                     "Năm Thi": current_nam_thi,
                     "Tên File": pdf_file.name,
-                    "Điểm (Hệ 10)": round(score, 2) if score is not None else "Chưa đối sánh",
+                    "Điểm Toàn Đề (48 đơn vị)": round(score, 2) if score is not None else "Chưa đối sánh",
+                    "Điểm Bộ GD (KHMT)": round(score_khmt, 2) if score_khmt is not None else "-",
+                    "Điểm Bộ GD (THUD)": round(score_thud, 2) if score_thud is not None else "-",
                     "Số câu đúng": correct_count if score is not None else "-",
                     "Tổng số câu": total_count,
                     "Tỷ lệ đúng (%)": round((correct_count / total_count * 100), 2) if score is not None else "-",
                     "P1 Trắc nghiệm": f"{p1_correct}/{p1_total}" if score is not None else f"{p1_total} câu đã giải",
                     "P2 Đúng/Sai": f"{p2_correct}/{p2_total}" if score is not None else f"{p2_total} ý đã giải",
-                    "Model AI": model_choice,
+                    "Model AI": model_choice.replace("-preview", "") if model_choice else "",
                     "Thời gian (s)": latency_sec,
                     "Token Vào": token_in,
                     "Token Ra": token_out,

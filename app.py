@@ -29,7 +29,17 @@ load_dotenv()
 import sys
 import importlib
 
-for _mod_name in ['core.excel_utils', 'core.database', 'core.grading_logic', 'views.tab_grading', 'views.tab_history', 'views.tab_keys']:
+for _mod_name in [
+    'core.excel_utils',
+    'core.pdf_utils',
+    'core.ai_grader',
+    'core.database',
+    'core.grading_logic',
+    'core.mock_data',
+    'views.tab_grading',
+    'views.tab_history',
+    'views.tab_keys'
+]:
     if _mod_name in sys.modules:
         try:
             importlib.reload(sys.modules[_mod_name])
@@ -147,6 +157,24 @@ st.markdown("""
         opacity: 1 !important;
         z-index: 1000000 !important;
     }
+
+    /* 7. MỞ RỘNG TỐI ĐA KHUNG NỘI DUNG CHÍNH ĐỂ BẢNG HIỂN THỊ TRỌN VẸN KHÔNG CẦN KÉO NGANG */
+    .block-container,
+    [data-testid="stMainBlockContainer"],
+    .main .block-container {
+        max-width: 100% !important;
+        padding-left: 1.2rem !important;
+        padding-right: 1.2rem !important;
+        padding-top: 1.5rem !important;
+    }
+    section[data-testid="stSidebar"] {
+        width: 245px !important;
+        min-width: 245px !important;
+    }
+    [data-testid="stExpanderDetails"] {
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -175,6 +203,7 @@ def main():
         model_choice = st.selectbox(
             "Chọn Model Gemini",
             options=["gemini-3.8-flash", "gemini-3.1-pro-preview"],
+            format_func=lambda x: "gemini-3.1-pro" if "pro" in x else "gemini-3.8-flash",
             index=0,
             help="Cả hai mô hình (Flash và Pro) đều chạy qua Kiến trúc 2 Pha tối ưu: Pha 1 đọc 24 câu P1, Pha 2 dồn 100% suy luận giải 6 câu P2 Đúng/Sai, Pha 3 điền giải thích lý thuyết súc tích."
         )

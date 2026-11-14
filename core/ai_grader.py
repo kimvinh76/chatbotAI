@@ -43,9 +43,9 @@ CẤU TRÚC ĐỀ THI TIN HỌC:
 QUY TẮC BẮT BUỘC:
 - Hãy giải đầy đủ cả 24 câu Phần I và toàn bộ 6 câu Phần II (gồm cả Câu 1, 2 chung và Câu 3, 4 KHMT, Câu 5, 6 THUD).
 - Phần I: dap_an chỉ là 1 ký tự duy nhất ('A', 'B', 'C' hoặc 'D'). giai_thich chứa lời giải thích ngắn gọn dưới 35 từ.
-- Phần II: Các trường y_a, y_b, y_c, y_d BẮT BUỘC CHỈ CHỨA DUY NHẤT 1 từ là 'Đúng' hoặc 'Sai' (TUYỆT ĐỐI KHÔNG mở ngoặc, không ghi kèm lý do vào trường này). Toàn bộ lời giải thích BẮT BUỘC phải điền riêng vào các trường giai_thich_a, giai_thich_b, giai_thich_c, giai_thich_d (dưới 35 từ mỗi ý, TUYỆT ĐỐI KHÔNG ĐỂ RỖNG).
+- Phần II: Với mỗi ý (a, b, c, d), trường dap_an BẮT BUỘC là 'Đúng' hoặc 'Sai'. Trường giai_thich BẮT BUỘC điền lời giải thích ngắn gọn (15-30 từ) phân tích bản chất kỹ thuật bám sát nội dung câu hỏi trong đề thi, TUYỆT ĐỐI KHÔNG ĐỂ TRỐNG!
 - YÊU CẦU CHẤT LƯỢNG GIẢI THÍCH HỌC THUẬT:
-  + TUYỆT ĐỐI KHÔNG giải thích sáo rỗng chung chung (CẤM các câu như: 'Căn cứ kiến thức SGK Tin học 12', 'Theo chuẩn GDPT 2018', 'Đây là đáp án đúng').
+  + TUYỆT ĐỐI KHÔNG giải thích sáo rỗng chung chung (CẤM các câu như: 'Căn cứ kiến thức SGK Tin học 12', 'Theo chuẩn GDPT 2018', 'Đây là đáp án đúng', 'Khẳng định này là đúng theo kiến thức Tin học').
   + Lời giải thích BẮT BUỘC phải đi thẳng vào bản chất kỹ thuật của câu hỏi:
     * Với lý thuyết/mạng/phần cứng: Nêu rõ định nghĩa, vai trò thiết bị, tầng giao thức (TCP, IP, Router, Switch, RAM, ROM, TLS...).
     * Với thuật toán/mã nguồn Python/C++: Mô phỏng từng bước (dry-run) biến số, điều kiện vòng lặp, giá trị trả về của hàm.
@@ -56,39 +56,52 @@ QUY TẮC BẮT BUỘC:
 
 # --- SCHEMA JSON ĐẦU RA (TYPEDDICT CHO GEMINI API) ---
 
-# Cấu trúc 1 câu trắc nghiệm Phần I (Câu 1 đến 24)
-class CauHoiPhan1(typing.TypedDict, total=False):
-    cau_hoi: int       # Số thứ tự câu (1..24)
-    dap_an: str        # Ký tự A, B, C hoặc D
-    giai_thich: str    # Căn cứ giải thích ngắn
+# Cấu trúc 1 câu trắc nghiệm Phần I (Câu 1 đến 24 - bắt buộc đủ số câu, đáp án A/B/C/D và giải thích)
+class CauHoiPhan1(typing.TypedDict):
+    cau_hoi: int
+    dap_an: typing.Literal["A", "B", "C", "D"]
+    giai_thich: str
 
-# Cấu trúc 1 câu Đúng/Sai Phần II (Câu 1 đến 6, mỗi câu 4 ý a,b,c,d)
-class CauHoiPhan2(typing.TypedDict, total=False):
+# Cấu trúc từng ý Đúng/Sai Phần II (bắt buộc gồm đáp án Đúng/Sai và lời giải thích kỹ thuật)
+class YDungSai(typing.TypedDict):
+    dap_an: typing.Literal["Đúng", "Sai"]
+    giai_thich: str
+
+# Cấu trúc 1 câu Đúng/Sai Phần II (Câu 1 đến 6, mỗi câu 4 ý a,b,c,d gắn liền giải thích)
+class CauHoiPhan2(typing.TypedDict):
     cau_hoi: int       # Số thứ tự câu (1..6)
-    y_a: str           # 'Đúng' hoặc 'Sai'
-    y_b: str           # 'Đúng' hoặc 'Sai'
-    y_c: str           # 'Đúng' hoặc 'Sai'
-    y_d: str           # 'Đúng' hoặc 'Sai'
-    giai_thich_a: str  # Lời giải thích ý a
-    giai_thich_b: str  # Lời giải thích ý b
-    giai_thich_c: str  # Lời giải thích ý c
-    giai_thich_d: str  # Lời giải thích ý d
+    y_a: YDungSai
+    y_b: YDungSai
+    y_c: YDungSai
+    y_d: YDungSai
+
+# Cấu trúc câu phẳng (Flat) sau khi chuẩn hóa để lưu DB và hiển thị bảng đối sánh
+class CauHoiPhan2Flat(typing.TypedDict, total=False):
+    cau_hoi: int
+    y_a: str
+    y_b: str
+    y_c: str
+    y_d: str
+    giai_thich_a: str
+    giai_thich_b: str
+    giai_thich_c: str
+    giai_thich_d: str
 
 # Schema hợp nhất toàn bài thi (kết quả hoàn chỉnh sau khi ghép Pha 1 + Pha 2)
 class BaiGiaiDeThi(typing.TypedDict, total=False):
     nam_thi: int
     ma_de: str
     phan_1: list[CauHoiPhan1]
-    phan_2: list[CauHoiPhan2]
+    phan_2: list[CauHoiPhan2Flat]
 
-# Schema gọi API Pha 1: Bóc tách mã đề, năm thi và giải duy nhất 24 câu Phần I
-class BaiGiaiPhan1(typing.TypedDict, total=False):
+# Schema gọi API Pha 1: Bóc tách mã đề, năm thi và giải duy nhất 24 câu Phần I (bắt buộc đầy đủ)
+class BaiGiaiPhan1(typing.TypedDict):
     nam_thi: int
     ma_de: str
     phan_1: list[CauHoiPhan1]
 
-# Schema gọi API Pha 2: Giải duy nhất 6 câu Phần II (gồm Đúng/Sai và giải thích bám sát đề thi)
-class BaiGiaiPhan2(typing.TypedDict, total=False):
+# Schema gọi API Pha 2: Giải duy nhất 6 câu Phần II (áp dụng ràng buộc chặt chẽ bắt buộc điền Đúng/Sai và Giải thích)
+class BaiGiaiPhan2(typing.TypedDict):
     phan_2: list[CauHoiPhan2]
 
 # Bí danh tương thích ngược
@@ -98,6 +111,27 @@ DeThiResponse = BaiGiaiDeThi
 Phan1OnlyResponse = BaiGiaiPhan1
 Phan2OnlyResponse = BaiGiaiPhan2
 
+
+def _flatten_p2_item(it):
+    """
+    Chuẩn hóa 1 câu Phần II:
+    Nếu AI trả về dạng cấu trúc cặp:
+      y_a = {"dap_an": "Đúng", "giai_thich": "..."}
+    thì tự động làm phẳng thành:
+      y_a = "Đúng"
+      giai_thich_a = "..."
+    Đồng thời vẫn tương thích ngược 100% nếu AI trả về dạng phẳng cũ.
+    """
+    if not isinstance(it, dict):
+        return it
+    out = dict(it)
+    for k in ['a', 'b', 'c', 'd']:
+        v = it.get(f'y_{k}')
+        if isinstance(v, dict):
+            out[f'y_{k}'] = str(v.get('dap_an', '')).strip()
+            if v.get('giai_thich'):
+                out[f'giai_thich_{k}'] = str(v.get('giai_thich', '')).strip()
+    return out
 
 
 def robust_exam_json_parser(resp_text):
@@ -111,7 +145,10 @@ def robust_exam_json_parser(resp_text):
     resp_text = re.sub(r',\s*([\]}])', r'\1', resp_text)
     
     try:
-        return json.loads(resp_text.strip(), strict=False)
+        data = json.loads(resp_text.strip(), strict=False)
+        if isinstance(data, dict) and "phan_2" in data and isinstance(data["phan_2"], list):
+            data["phan_2"] = [_flatten_p2_item(it) for it in data["phan_2"]]
+        return data
     except Exception as e:
         # Regex phục hồi linh hoạt nếu JSON bị dính ký tự lạ
         phan_1 = []
@@ -123,26 +160,50 @@ def robust_exam_json_parser(resp_text):
             })
             
         phan_2 = []
-        for m in re.finditer(
-            r'\{[^{}]*?"cau_hoi"\s*:\s*(\d+)[^{}]*?"y_a"\s*:\s*"([^"]+)"[^{}]*?"y_b"\s*:\s*"([^"]+)"[^{}]*?"y_c"\s*:\s*"([^"]+)"[^{}]*?"y_d"\s*:\s*"([^"]+)"[^{}]*?\}',
-            resp_text, re.DOTALL
-        ):
-            m_text = m.group(0)
-            ga = re.search(r'"giai_thich_a"\s*:\s*"([^"]*)"', m_text)
-            gb = re.search(r'"giai_thich_b"\s*:\s*"([^"]*)"', m_text)
-            gc = re.search(r'"giai_thich_c"\s*:\s*"([^"]*)"', m_text)
-            gd = re.search(r'"giai_thich_d"\s*:\s*"([^"]*)"', m_text)
-            phan_2.append({
-                "cau_hoi": int(m.group(1)),
-                "y_a": m.group(2).strip(),
-                "y_b": m.group(3).strip(),
-                "y_c": m.group(4).strip(),
-                "y_d": m.group(5).strip(),
-                "giai_thich_a": ga.group(1).strip() if ga else "",
-                "giai_thich_b": gb.group(1).strip() if gb else "",
-                "giai_thich_c": gc.group(1).strip() if gc else "",
-                "giai_thich_d": gd.group(1).strip() if gd else ""
-            })
+        # 1. Phục hồi cấu trúc lồng YDungSai {"cau_hoi": 1, "y_a": {"dap_an": "...", "giai_thich": "..."}}
+        c_matches = list(re.finditer(r'"cau_hoi"\s*:\s*(\d+)', resp_text))
+        for idx_m, m_c in enumerate(c_matches):
+            start_pos = m_c.start()
+            end_pos = c_matches[idx_m + 1].start() if idx_m + 1 < len(c_matches) else len(resp_text)
+            chunk = resp_text[start_pos:end_pos]
+            if '"y_a"' not in chunk:
+                continue
+            item_p2 = {"cau_hoi": int(m_c.group(1))}
+            found_nested = False
+            for k in ['a', 'b', 'c', 'd']:
+                m_yk = re.search(
+                    rf'"y_{k}"\s*:\s*\{{\s*"dap_an"\s*:\s*"([^"]+)"(?:\s*,\s*"giai_thich"\s*:\s*"((?:\\.|[^"\\])*)")?',
+                    chunk, re.DOTALL
+                )
+                if m_yk:
+                    found_nested = True
+                    item_p2[f"y_{k}"] = m_yk.group(1).strip()
+                    item_p2[f"giai_thich_{k}"] = m_yk.group(2).strip() if m_yk.group(2) else ""
+            if found_nested:
+                phan_2.append(item_p2)
+
+        # 2. Dự phòng cấu trúc phẳng cũ nếu chưa khớp cấu trúc lồng
+        if not phan_2:
+            for m in re.finditer(
+                r'\{[^{}]*?"cau_hoi"\s*:\s*(\d+)[^{}]*?"y_a"\s*:\s*"([^"]+)"[^{}]*?"y_b"\s*:\s*"([^"]+)"[^{}]*?"y_c"\s*:\s*"([^"]+)"[^{}]*?"y_d"\s*:\s*"([^"]+)"[^{}]*?\}',
+                resp_text, re.DOTALL
+            ):
+                m_text = m.group(0)
+                ga = re.search(r'"giai_thich_a"\s*:\s*"([^"]*)"', m_text)
+                gb = re.search(r'"giai_thich_b"\s*:\s*"([^"]*)"', m_text)
+                gc = re.search(r'"giai_thich_c"\s*:\s*"([^"]*)"', m_text)
+                gd = re.search(r'"giai_thich_d"\s*:\s*"([^"]*)"', m_text)
+                phan_2.append({
+                    "cau_hoi": int(m.group(1)),
+                    "y_a": m.group(2).strip(),
+                    "y_b": m.group(3).strip(),
+                    "y_c": m.group(4).strip(),
+                    "y_d": m.group(5).strip(),
+                    "giai_thich_a": ga.group(1).strip() if ga else "",
+                    "giai_thich_b": gb.group(1).strip() if gb else "",
+                    "giai_thich_c": gc.group(1).strip() if gc else "",
+                    "giai_thich_d": gd.group(1).strip() if gd else ""
+                })
             
         res = {"phan_1": phan_1, "phan_2": phan_2}
         m_y = re.search(r'"nam_thi"\s*:\s*(\d{4})', resp_text)
@@ -150,7 +211,7 @@ def robust_exam_json_parser(resp_text):
             res["nam_thi"] = int(m_y.group(1))
         m_c = re.search(r'"ma_de"\s*:\s*"([^"]+)"', resp_text)
         if m_c:
-            res["ma_de"] = str(m_c.group(1))
+            res["ma_de"] = normalize_ma_de(str(m_c.group(1)))
             
         if phan_1 or phan_2:
             return res
@@ -173,9 +234,16 @@ def _record(tag, resp):
         entry["finish"] = "?"
     try:
         u = resp.usage_metadata
-        entry["token_vao"] = getattr(u, "prompt_token_count", 0)
-        entry["token_ra"] = getattr(u, "candidates_token_count", 0)
-        entry["token_nghi"] = getattr(u, "thoughts_token_count", 0) or 0
+        p_cnt = getattr(u, "prompt_token_count", 0) or 0
+        c_cnt = getattr(u, "candidates_token_count", 0) or 0
+        tot_cnt = getattr(u, "total_token_count", 0) or 0
+        th_cnt = getattr(u, "thoughts_token_count", None)
+        if th_cnt is None or th_cnt == 0:
+            th_cnt = max(0, tot_cnt - p_cnt - c_cnt)
+        entry["token_vao"] = p_cnt
+        entry["token_ra"] = c_cnt
+        entry["token_nghi"] = th_cnt
+        entry["token_tong"] = tot_cnt
     except Exception:
         pass
     _USAGE_LOG.append(entry)
@@ -190,7 +258,7 @@ def _is_max_tokens(resp):
         return False
 
 
-def _generate_json(model_name, schema, contents, tag, temperature=0.1, token_steps=(8192, 24576)):
+def _generate_json(model_name, schema, contents, tag, temperature=0.1, token_steps=(24576, 32768)):
     last_err, fallback = None, None
     for i, mt in enumerate(token_steps):
         model = genai.GenerativeModel(
@@ -204,7 +272,7 @@ def _generate_json(model_name, schema, contents, tag, temperature=0.1, token_ste
             )
         )
         try:
-            resp = model.generate_content(contents, request_options={"timeout": 120})
+            resp = model.generate_content(contents, request_options={"timeout": 240})
             _record(f"{tag} [trần {mt}]", resp)
             truncated = _is_max_tokens(resp)
             parsed = robust_exam_json_parser(resp.text)
@@ -255,13 +323,13 @@ def _call_gemini_api_base(api_key, text, ma_de, nam_thi="2025", pdf_bytes=None, 
  - Câu 3, 4: Phần riêng Khoa học máy tính (ở trang 4).
  - Câu 5, 6: Phần riêng Tin học ứng dụng (ở trang 4).
  YÊU CẦU BẮT BUỘC:
- 1. Đánh giá 'Đúng' hoặc 'Sai' cho từng ý a, b, c, d của cả 6 câu (đánh số cau_hoi từ 1 đến 6).
- 2. Điền lời giải thích ngắn gọn (dưới 25 từ) nêu rõ căn cứ lý thuyết vào các trường giai_thich_a, giai_thich_b, giai_thich_c, giai_thich_d.
+ 1. Giải trọn vẹn cả 6 câu (đánh số cau_hoi từ 1 đến 6).
+ 2. Với mỗi ý y_a, y_b, y_c, y_d: điền dap_an là 'Đúng' hoặc 'Sai' VÀ BẮT BUỘC điền giai_thich ngắn gọn (dưới 25 từ) nêu rõ lý do kỹ thuật bám sát đề thi, TUYỆT ĐỐI KHÔNG ĐỂ TRỐNG!
  Trả về JSON tuân thủ đúng Schema BaiGiaiPhan2."""
     else:
         # Nhánh 2 (Kênh Digital Text): Suy luận logic dựa trên chuỗi văn bản trích xuất
         prompt_p2 = f"""Hãy giải TOÀN BỘ 6 CÂU HỎI CỦA PHẦN II (từ câu 1 đến 6, mỗi câu đủ 4 ý a, b, c, d) từ đề thi dưới đây.
- Đánh giá 'Đúng' hoặc 'Sai' và kèm lời giải thích ngắn gọn (dưới 25 từ) cho mỗi ý.
+ Với mỗi ý y_a, y_b, y_c, y_d: điền dap_an là 'Đúng' hoặc 'Sai' VÀ BẮT BUỘC điền giai_thich ngắn gọn (dưới 25 từ) nêu rõ lý do kỹ thuật bám sát đề thi.
  \n--- NỘI DUNG ĐỀ THI ---\n{text}"""
     c2.append(prompt_p2)
 
@@ -269,11 +337,15 @@ def _call_gemini_api_base(api_key, text, ma_de, nam_thi="2025", pdf_bytes=None, 
     parsed_p2 = _generate_json(model_name, BaiGiaiPhan2, c2, f"{tag_prefix} Pha 2 (6 câu P2 Đúng/Sai)")
 
     # Ghép hợp nhất kết quả hoàn chỉnh từ 2 pha
+    p2_raw = parsed_p2.get("phan_2", []) if isinstance(parsed_p2, dict) else []
+    p2_flat = [_flatten_p2_item(it) for it in p2_raw]
+    raw_md = str(parsed_p1.get("ma_de") or ma_de).strip()
+    norm_md = normalize_ma_de(raw_md) if re.search(r'\d', raw_md) else normalize_ma_de(ma_de)
     return {
         "nam_thi": parsed_p1.get("nam_thi") or int(nam_thi),
-        "ma_de": parsed_p1.get("ma_de") or str(ma_de),
+        "ma_de": norm_md,
         "phan_1": parsed_p1.get("phan_1", []),
-        "phan_2": parsed_p2.get("phan_2", []) if isinstance(parsed_p2, dict) else []
+        "phan_2": p2_flat
     }
 
 
@@ -287,12 +359,23 @@ def _valid_yn(v):
     return s.startswith(("ĐÚNG", "DUNG", "SAI", "TRUE", "FALSE")) or s in ("Đ", "D", "S")
 
 
+def _is_valid_exp(s):
+    txt = str(s or "").strip()
+    if not txt:
+        return False
+    low = txt.lower()
+    if "dựa trên phân tích logic câu hỏi" in low or "theo kiến thức tin học chuẩn" in low:
+        return False
+    return True
+
+
 def _p2_score(it):
     """Điểm đầy đủ của 1 câu Phần II: tối đa 8 = 4 ý Đúng/Sai hợp lệ + 4 lời giải thích ngắn bám sát đề thi."""
     if not isinstance(it, dict):
         return 0
+    it = _flatten_p2_item(it)
     score_yn = sum(_valid_yn(it.get(f"y_{k}", "")) for k in "abcd")
-    score_exp = sum(bool(str(it.get(f"giai_thich_{k}", "")).strip()) for k in "abcd")
+    score_exp = sum(_is_valid_exp(it.get(f"giai_thich_{k}", "")) for k in "abcd")
     return score_yn + score_exp
 
 
@@ -308,7 +391,7 @@ def _norm_p1(items):
             continue
         m = re.match(r'^\s*([A-Da-d])\b', str(it.get("dap_an", "")))
         if 1 <= c <= 24 and m:
-            if c not in out or (not out[c].get("giai_thich") and it.get("giai_thich")):
+            if c not in out or (not _is_valid_exp(out[c].get("giai_thich")) and _is_valid_exp(it.get("giai_thich"))):
                 it = dict(it)
                 it["dap_an"] = m.group(1).upper()
                 out[c] = it
@@ -317,7 +400,7 @@ def _norm_p1(items):
 
 def _norm_p2(items):
     """Chuẩn hóa Phần II thành {số câu 1..6: item}. Nếu AI trả đúng 6 câu nhưng đánh số lặp (1,2,1,2,..) thì đánh lại 1..6."""
-    items = [it for it in (items or []) if isinstance(it, dict)]
+    items = [_flatten_p2_item(it) for it in (items or []) if isinstance(it, dict)]
     nums = []
     for it in items:
         try:
@@ -339,16 +422,6 @@ def _norm_p2(items):
 
 def _ask_subset(model_name, schema, prompt, text, pdf_bytes, temperature):
     """Gọi AI cho 1 tập con câu hỏi (prompt ngắn, tập trung)."""
-    model = genai.GenerativeModel(
-        model_name=model_name,
-        system_instruction=SYSTEM_PROMPT,
-        generation_config=genai.GenerationConfig(
-            response_mime_type="application/json",
-            response_schema=schema,
-            temperature=temperature,
-            max_output_tokens=8192
-        )
-    )
     contents = []
     if pdf_bytes:
         contents.append({"mime_type": "application/pdf", "data": pdf_bytes})
@@ -364,7 +437,7 @@ def fill_missing_answers(api_key, result, text, pdf_bytes, model_name, max_round
     p2 = _norm_p2(result.get("phan_2"))
     temps = [0.1, 0.3, 0.5]
     for rnd in range(max_rounds):
-        miss1 = [c for c in range(1, 25) if c not in p1 or not str(p1[c].get("giai_thich", "")).strip()]
+        miss1 = [c for c in range(1, 25) if c not in p1 or not _is_valid_exp(p1[c].get("giai_thich", ""))]
         miss2 = [c for c in range(1, 7) if _p2_score(p2.get(c)) < 8]
         if not miss1 and not miss2:
             break
@@ -387,10 +460,10 @@ def fill_missing_answers(api_key, result, text, pdf_bytes, model_name, max_round
                 desc = {1: "Câu 1 (Chung)", 2: "Câu 2 (Chung)", 3: "Câu 3 (KHMT)", 4: "Câu 4 (KHMT)", 5: "Câu 5 (THUD)", 6: "Câu 6 (THUD)"}
                 targets = "; ".join(f"{desc[c]} -> cau_hoi={c}" for c in miss2)
                 prompt = (f"Giải các câu PHẦN II sau: {targets}. Mỗi câu đủ 4 ý a, b, c, d.\n"
-                          f"Đánh giá 'Đúng'/'Sai' (vào y_a..d) và BẮT BUỘC giải thích dưới 25 từ bám sát đề (vào giai_thich_a..d). "
+                          f"Với mỗi ý y_a, y_b, y_c, y_d: điền dap_an là 'Đúng' hoặc 'Sai' và BẮT BUỘC điền giai_thich dưới 25 từ bám sát đề thi. "
                           f"Trả về Schema BaiGiaiPhan2.")
                 got = _ask_subset(model_name, BaiGiaiPhan2, prompt, text, pdf_bytes, temp)
-                items = [it for it in (got.get("phan_2") or []) if isinstance(it, dict)]
+                items = [_flatten_p2_item(it) for it in (got.get("phan_2") or []) if isinstance(it, dict)]
                 for i, it in enumerate(items):
                     try:
                         c = int(it.get("cau_hoi"))
@@ -409,7 +482,7 @@ def fill_missing_answers(api_key, result, text, pdf_bytes, model_name, max_round
     result["phan_1"] = [p1[c] for c in sorted(p1)]
     result["phan_2"] = [p2[c] for c in sorted(p2)]
 
-    left1 = [c for c in range(1, 25) if c not in p1 or not str(p1[c].get("giai_thich", "")).strip()]
+    left1 = [c for c in range(1, 25) if c not in p1 or not _is_valid_exp(p1[c].get("giai_thich", ""))]
     left2 = [c for c in range(1, 7) if _p2_score(p2.get(c)) < 8]
     warns = []
     if left1:

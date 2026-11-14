@@ -40,7 +40,7 @@ def generate_mock_exam_solution(ma_de: str, nam_thi: str = "2026", mongo_uri: st
     phan_1 = []
     p1_keys = {}
     if not key_df.empty:
-        df_p1 = key_df[key_df['Phần'].astype(str).str.contains('I', na=False)]
+        df_p1 = key_df[key_df['Phần'].astype(str).str.strip().isin(['1', 'I', 'Phần I', 'Phần 1'])]
         for _, r in df_p1.iterrows():
             try:
                 c_num = int(r['Câu'])
@@ -97,7 +97,7 @@ def generate_mock_exam_solution(ma_de: str, nam_thi: str = "2026", mongo_uri: st
     phan_2 = []
     p2_keys = {}
     if not key_df.empty:
-        df_p2 = key_df[~key_df['Phần'].astype(str).str.contains('I', na=False)]
+        df_p2 = key_df[key_df['Phần'].astype(str).str.strip().isin(['2', 'II', 'Phần II', 'Phần 2'])]
         for _, r in df_p2.iterrows():
             try:
                 c_num = int(r['Câu'])

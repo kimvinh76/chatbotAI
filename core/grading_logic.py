@@ -107,15 +107,20 @@ def build_comparison_and_detail_df(ai_data, answer_key_df=None, ma_de_hien_tai="
         for i, y in enumerate(['y_a', 'y_b', 'y_c', 'y_d']):
             y_label = chr(65 + i) # A, B, C, D
             if has_this_p2:
-                raw_ai = str(item.get(y, "")).strip()
-                giai_thich_y = str(
-                    item.get(f"giai_thich_{chr(97 + i)}") or 
-                    item.get(f"giai_thich_{chr(65 + i)}") or 
-                    item.get(f"giai_thich_{y}") or 
-                    item.get(f"gt_{chr(97 + i)}") or 
-                    item.get(f"ly_do_{chr(97 + i)}") or 
-                    ""
-                ).strip()
+                raw_ai_val = item.get(y, "")
+                if isinstance(raw_ai_val, dict):
+                    raw_ai = str(raw_ai_val.get("dap_an", "")).strip()
+                    giai_thich_y = str(raw_ai_val.get("giai_thich", "")).strip()
+                else:
+                    raw_ai = str(raw_ai_val).strip()
+                    giai_thich_y = str(
+                        item.get(f"giai_thich_{chr(97 + i)}") or 
+                        item.get(f"giai_thich_{chr(65 + i)}") or 
+                        item.get(f"giai_thich_{y}") or 
+                        item.get(f"gt_{chr(97 + i)}") or 
+                        item.get(f"ly_do_{chr(97 + i)}") or 
+                        ""
+                    ).strip()
                 
                 # Tự động tách nếu giá trị AI có chứa nội dung ngoặc đơn vd: "Sai (các máy tính...)" hoặc sau dấu chấm / gạch ngang
                 extracted_reason = ""
@@ -143,7 +148,7 @@ def build_comparison_and_detail_df(ai_data, answer_key_df=None, ma_de_hien_tai="
                 if not giai_thich_y and extracted_reason:
                     giai_thich_y = extracted_reason
                 elif not giai_thich_y and dap_an_ai in ("Đúng", "Sai"):
-                    giai_thich_y = f"Khẳng định này là {dap_an_ai.lower()} theo kiến thức Tin học chuẩn."
+                    giai_thich_y = "AI chưa cung cấp giải thích chi tiết cho khẳng định này."
             else:
                 dap_an_ai = "Chưa làm / Bỏ sót"
                 giai_thich_y = "AI đọc sót hoặc không giải câu này"
@@ -183,6 +188,66 @@ def build_comparison_and_detail_df(ai_data, answer_key_df=None, ma_de_hien_tai="
     return df_res, has_key
 
 
+def calculate_moet_scores(detail_df):
+    """
+    Tính điểm chuẩn xác theo Quy chế của Bộ Giáo dục & Đào tạo (Thang điểm 10):
+    - Phần I (24 câu): Mỗi câu đúng được 0.25 điểm (tối đa 6.0 điểm).
+    - Phần II (Thí sinh chọn 1 trong 2 định hướng, tối đa 4.0 điểm):
+      + Câu 1, Câu 2: Phần chung bắt buộc
+      + Câu 3, Câu 4: Định hướng Khoa học máy tính (KHMT)
+      + Câu 5, Câu 6: Định hướng Tin học ứng dụng (THUD)
+      + Quy tắc điểm bậc thang lũy tiến cho từng câu hỏi lớn:
+        * Đúng 1 ý: 0.10 điểm
+        * Đúng 2 ý: 0.25 điểm
+        * Đúng 3 ý: 0.50 điểm
+        * Đúng 4 ý: 1.00 điểm
+    Trả về:
+    - diem_khmt (float): Điểm thí sinh chọn nhánh Khoa học máy tính (tối đa 10.0)
+    - diem_thud (float): Điểm thí sinh chọn nhánh Tin học ứng dụng (tối đa 10.0)
+    - p1_score (float): Điểm Phần I (tối đa 6.0)
+    - p2_scores_dict (dict): Điểm từng câu Phần II (Câu 1 đến Câu 6)
+    """
+    if detail_df is None or (isinstance(detail_df, pd.DataFrame) and detail_df.empty):
+        return 0.0, 0.0, 0.0, {}
+
+    records = detail_df.to_dict(orient='records') if isinstance(detail_df, pd.DataFrame) else list(detail_df)
+
+    # 1. Điểm Phần I
+    p1_items = [d for d in records if d.get('Phần') == 'Phần I (Trắc nghiệm)']
+    p1_correct = sum(1 for d in p1_items if 'Đúng' in str(d.get('Kết Quả', '')))
+    p1_score = round(p1_correct * 0.25, 2)
+
+    # 2. Điểm lũy tiến từng câu Phần II
+    def score_single_cau(exact_cau_label):
+        items = [d for d in records if d.get('Câu') == exact_cau_label]
+        c = sum(1 for it in items if 'Đúng' in str(it.get('Kết Quả', '')))
+        if c == 1:
+            return 0.10
+        elif c == 2:
+            return 0.25
+        elif c == 3:
+            return 0.50
+        elif c == 4:
+            return 1.00
+        return 0.0
+
+    p2_scores = {
+        1: score_single_cau("Phần II.A (Chung) - Câu 1"),
+        2: score_single_cau("Phần II.A (Chung) - Câu 2"),
+        3: score_single_cau("Phần II.B1 (KHMT) - Câu 3"),
+        4: score_single_cau("Phần II.B1 (KHMT) - Câu 4"),
+        5: score_single_cau("Phần II.B2 (THUD) - Câu 5"),
+        6: score_single_cau("Phần II.B2 (THUD) - Câu 6"),
+    }
+
+    # Thí sinh chọn KHMT: Phần I + Câu 1 + Câu 2 + Câu 3 + Câu 4
+    diem_khmt = round(p1_score + p2_scores[1] + p2_scores[2] + p2_scores[3] + p2_scores[4], 2)
+    # Thí sinh chọn THUD: Phần I + Câu 1 + Câu 2 + Câu 5 + Câu 6
+    diem_thud = round(p1_score + p2_scores[1] + p2_scores[2] + p2_scores[5] + p2_scores[6], 2)
+
+    return diem_khmt, diem_thud, p1_score, p2_scores
+
+
 def render_comparison_detail_table(detail_df: pd.DataFrame, key_suffix: str = ""):
     """
     Hiển thị Bảng Lưới (DataGrid) duy nhất, đồng bộ 100% cho cả Tab 1 và Tab 2.
@@ -198,7 +263,7 @@ def render_comparison_detail_table(detail_df: pd.DataFrame, key_suffix: str = ""
     for idx, row in detail_df.reset_index(drop=True).iterrows():
         stt = idx + 1
         raw_phan = str(row.get("Phần", ""))
-        p_prefix = "P1" if "Phần I" in raw_phan or raw_phan == "1" else "P2"
+        p_prefix = "P2" if ("Phần II" in raw_phan or raw_phan == "2" or "P2" in raw_phan) else "P1"
         
         raw_cau = str(row.get("Câu", ""))
         m_c = re.search(r'Câu\s*(\d+)', raw_cau, re.IGNORECASE)
@@ -233,17 +298,17 @@ def render_comparison_detail_table(detail_df: pd.DataFrame, key_suffix: str = ""
     st.dataframe(
         styled_df,
         use_container_width=True,
-        height=540,
+        height=600,
         key=f"grid_detail_{key_suffix}" if key_suffix else None,
         column_config={
-            "Câu / Ý": st.column_config.TextColumn("Câu / Ý", width=115),
+            "Câu / Ý": st.column_config.TextColumn("Câu / Ý", width=105),
             "Giải Thích Chi Tiết Của AI": st.column_config.TextColumn(
                 "Giải Thích Chi Tiết Của AI",
-                width=950,
+                width=740,
                 help="Phân tích, lập luận logic và đối soát học thuật của AI",
             ),
-            "AI Chọn": st.column_config.TextColumn("AI Chọn", width=80),
-            "Đáp Án Đúng": st.column_config.TextColumn("Đáp Án Đúng", width=105),
-            "Kết Quả": st.column_config.TextColumn("Kết Quả", width=85),
+            "AI Chọn": st.column_config.TextColumn("AI Chọn", width=70),
+            "Đáp Án Đúng": st.column_config.TextColumn("Đáp Án Đúng", width=90),
+            "Kết Quả": st.column_config.TextColumn("Kết Quả", width=75),
         }
     )

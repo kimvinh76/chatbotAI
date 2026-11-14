@@ -22,7 +22,7 @@ from core.database import (
     delete_batch_from_db,
 )
 from core.excel_utils import df_to_excel_bytes, dict_to_multisheet_excel_bytes
-from core.grading_logic import render_comparison_detail_table
+from core.grading_logic import render_comparison_detail_table, calculate_moet_scores
 
 
 def render_tab_history(mongo_uri: str):
@@ -74,7 +74,7 @@ def render_tab_history(mongo_uri: str):
             "Mã Đợt (Batch ID)": b.get("batch_id"),
             "Tên Đợt Thi": b.get("ten_dot_thi"),
             "Năm Thi": b.get("nam_thi"),
-            "Model AI": b.get("model_ai"),
+            "Model AI": str(b.get("model_ai", "")).replace("-preview", ""),
             "Số Đề Thi": b.get("tong_so_de"),
             "Điểm TB": b.get("diem_trung_binh") if b.get("diem_trung_binh") is not None else "N/A",
             "Thời Gian Chấm": b.get("thoi_gian_cham")
@@ -124,17 +124,22 @@ def render_tab_history(mongo_uri: str):
         if cost is None or cost == "":
             cost = edoc.get("cost_vnd", "-")
 
+        # Tự động tính điểm chuẩn theo quy chế Bộ GD&ĐT từ chi tiết đối sánh có sẵn
+        m_khmt, m_thud, _, _ = calculate_moet_scores(edoc.get("chi_tiet_doi_sanh", []))
+
         hist_summaries.append({
             "Mã Đề": edoc.get("ma_de"),
             "Năm Thi": edoc.get("nam_thi", "-"),
             "Tên File": edoc.get("ten_file"),
-            "Điểm (Hệ 10)": edoc.get("diem_so"),
+            "Điểm Toàn Đề (48 đơn vị)": edoc.get("diem_so"),
+            "Điểm Bộ GD (KHMT)": m_khmt if edoc.get("diem_so") is not None else "-",
+            "Điểm Bộ GD (THUD)": m_thud if edoc.get("diem_so") is not None else "-",
             "Số câu đúng": edoc.get("so_cau_dung"),
             "Tổng số câu": edoc.get("tong_so_cau"),
             "Tỷ lệ đúng (%)": edoc.get("ty_le_dung_phan_tram"),
             "P1 Trắc nghiệm": f"{edoc.get('thong_ke_phan_1', {}).get('so_cau_dung')}/{edoc.get('thong_ke_phan_1', {}).get('tong_so_cau')}",
             "P2 Đúng/Sai": f"{edoc.get('thong_ke_phan_2', {}).get('so_y_dung')}/{edoc.get('thong_ke_phan_2', {}).get('tong_so_y')}",
-            "Model AI": edoc.get("model_ai", "-"),
+            "Model AI": str(edoc.get("model_ai", "-")).replace("-preview", ""),
             "Thời gian (s)": lat,
             "Token Vào": tin,
             "Token Ra": tout,
@@ -218,7 +223,9 @@ def render_tab_history(mongo_uri: str):
         e_tth = edoc.get("token_nghi") if edoc.get("token_nghi") is not None else edoc.get("token_thought", "-")
         e_cost = edoc.get("chi_phi_vnd") if edoc.get("chi_phi_vnd") is not None else edoc.get("cost_vnd", "-")
 
-        with st.expander(f":material/assignment: Đề {e_ma_de} (Tệp: {e_file}) — Điểm: {e_score}/10 (Đúng {e_dung}/{e_tong} câu/ý) | {e_lat}s | {e_cost} VNĐ", expanded=True):
+        m_khmt, m_thud, _, _ = calculate_moet_scores(edoc.get("chi_tiet_doi_sanh", []))
+
+        with st.expander(f":material/assignment: Đề {e_ma_de} (Tệp: {e_file}) — Toàn đề (48 đơn vị): {e_score}/10 | Điểm Bộ GD: [KHMT: {m_khmt}/10 | THUD: {m_thud}/10] | {e_lat}s | {e_cost} VNĐ", expanded=True):
             # Thanh hiển thị Metrics hiệu năng của riêng bài thi này
             m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("Thời Gian Xử Lý", f"{e_lat} s" if e_lat != "-" else "-")
