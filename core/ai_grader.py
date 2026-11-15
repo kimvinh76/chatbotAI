@@ -152,11 +152,12 @@ def robust_exam_json_parser(resp_text):
     except Exception as e:
         # Regex phục hồi linh hoạt nếu JSON bị dính ký tự lạ
         phan_1 = []
-        for m in re.finditer(r'\{[^{}]*?"cau_hoi"\s*:\s*(\d+)[^{}]*?"dap_an"\s*:\s*"([A-Da-d])"(?:[^{}]*?"giai_thich"\s*:\s*"([^"]*)")?[^{}]*?\}', resp_text):
+        for m in re.finditer(r'\{\s*"cau_hoi"\s*:\s*(\d+)\s*,\s*"dap_an"\s*:\s*"([A-Da-d])"(?:\s*,\s*"giai_thich"\s*:\s*"((?:\\.|[^"\\])*)")?\s*\}', resp_text):
+            _gt = m.group(3).replace('\\"', '"').replace('\\n', ' ').strip() if m.group(3) else ""
             phan_1.append({
                 "cau_hoi": int(m.group(1)),
                 "dap_an": m.group(2).upper(),
-                "giai_thich": m.group(3).strip() if m.group(3) else ""
+                "giai_thich": _gt
             })
             
         phan_2 = []

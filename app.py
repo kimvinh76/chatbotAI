@@ -127,10 +127,10 @@ st.markdown("""
     .stDeployButton, [data-testid="stDeployButton"] {
         display: none !important;
     }
-    /* 2. Ẩn menu 3 chấm (MainMenu) góc trên bên phải */
-    #MainMenu {
-        visibility: hidden !important;
-        display: none !important;
+    /* 2. Giữ menu 3 chấm (MainMenu) để người dùng có thể mở Settings đổi Theme Sáng/Tối khi cần */
+    #MainMenu, [data-testid="stMainMenu"] {
+        visibility: visible !important;
+        display: block !important;
     }
     /* 3. Ẩn widget trạng thái running / loader / stop button */
     [data-testid="stStatusWidget"], [data-testid="stRunningMan"] {
@@ -167,9 +167,13 @@ st.markdown("""
         padding-right: 1.2rem !important;
         padding-top: 1.5rem !important;
     }
-    section[data-testid="stSidebar"] {
+    section[data-testid="stSidebar"][aria-expanded="true"] {
         width: 245px !important;
         min-width: 245px !important;
+    }
+    section[data-testid="stSidebar"][aria-expanded="false"] {
+        width: 0px !important;
+        min-width: 0px !important;
     }
     [data-testid="stExpanderDetails"] {
         padding-left: 0.75rem !important;
@@ -234,7 +238,24 @@ def main():
             st.warning("Chế độ Mô phỏng đang BẬT (0 token).")
 
         st.markdown("---")
-       
+        st.subheader(":material/palette: Giao Diện Hiển Thị")
+        _config_path = os.path.join(os.path.dirname(__file__), ".streamlit", "config.toml")
+        _is_light = False
+        if os.path.exists(_config_path):
+            with open(_config_path, "r", encoding="utf-8") as _f:
+                _is_light = 'base = "light"' in _f.read()
+        _light_mode = st.toggle(
+            "Giao diện Sáng (Light Mode)",
+            value=_is_light,
+            help="Chuyển sang nền trắng chữ đen để chụp ảnh báo cáo sắc nét hơn."
+        )
+        _target_theme = "light" if _light_mode else "dark"
+        if _light_mode != _is_light:
+            os.makedirs(os.path.dirname(_config_path), exist_ok=True)
+            with open(_config_path, "w", encoding="utf-8") as _f:
+                _f.write(f'[theme]\nbase = "{_target_theme}"\n')
+            st.toast(f"Đã chuyển sang chế độ {'Sáng' if _light_mode else 'Tối'}! Nhấn F5 nếu bảng chưa đổi màu.")
+            st.rerun()
 
     # =========================================================================
     # CÁC TAB ĐIỀU HƯỚNG GIAO DIỆN

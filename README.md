@@ -71,6 +71,7 @@ MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=tru
 ### Bước 3: Khởi chạy ứng dụng Streamlit
 
 **Cách 1 (Khởi chạy nhanh trên Windows):**
+
 - Chạy tệp `run_app.bat` (hoặc gõ `.\run` trong cửa sổ Terminal).
 
 **Cách 2 (Sử dụng lệnh chuẩn):**
