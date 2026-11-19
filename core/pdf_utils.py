@@ -31,15 +31,9 @@ def extract_text_from_pdf(pdf_file):
 
 
 def detect_metadata_from_file_and_text(pdf_file, text=""):
-    """
-    Tự động nhận diện Mã Đề và Năm Thi từ nội dung văn bản trang đầu, tên file PDF
-    hoặc siêu dữ liệu nội tại (PDF CreationDate/ModDate/Title) khi file scan bị đổi tên.
-    Ví dụ: 'ĐỀ THI TỐT NGHIỆP THPT NĂM 2025 - Mã đề 0504' -> Mã: '0504', Năm: '2025'.
-    """
     raw_name = pdf_file.name if hasattr(pdf_file, 'name') else str(pdf_file)
     file_name = os.path.basename(raw_name)
 
-    # Đọc nhanh byte PDF để lấy metadata nội tại (0 token, < 1ms) nếu cần
     pdf_meta_bytes = b""
     try:
         if hasattr(pdf_file, 'getvalue'):
@@ -52,7 +46,6 @@ def detect_metadata_from_file_and_text(pdf_file, text=""):
     except Exception:
         pass
 
-    # 1. Nhận diện năm thi: Văn bản đề -> Tên file -> PDF CreationDate/ModDate -> Mặc định 2025
     detected_year = "2025"
     m_year = (
         re.search(r'NĂM\s+(202[4-9]|203\d)', text, re.IGNORECASE)
@@ -64,8 +57,6 @@ def detect_metadata_from_file_and_text(pdf_file, text=""):
         m_meta_year = re.search(rb'(?:CreationDate|ModDate)\s*\(D:(202[4-9]|203\d)', pdf_meta_bytes)
         if m_meta_year:
             detected_year = m_meta_year.group(1).decode('ascii', errors='ignore')
-
-    # 2. Nhận diện mã đề: Văn bản đề -> Tên file (đã lọc năm) -> PDF Title metadata
     file_name_no_year = re.sub(r'202[4-9]|203\d', '', file_name)
     detected_code = ""
     m_code = (

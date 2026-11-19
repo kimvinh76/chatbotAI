@@ -310,8 +310,6 @@ def _call_gemini_api_base(api_key, text, ma_de, nam_thi="2025", pdf_bytes=None, 
     c1.append(prompt_p1)
     # Thực thi suy luận Pha 1 áp dụng Logit Masking với Schema BaiGiaiPhan1
     parsed_p1 = _generate_json(model_name, BaiGiaiPhan1, c1, f"{tag_prefix} Pha 1 (24 câu P1)")
-    
-    # Khoảng nghỉ an toàn chủ động chống vượt ngưỡng Rate Limit 
     time.sleep(1.2)
     # PHA 2: DỒN TOÀN BỘ SUY LUẬN CHO 6 CÂU ĐÚNG/SAI PHẦN II (KÈM GIẢI THÍCH)
     c2 = []

@@ -1,10 +1,10 @@
-# 🤖 Hệ Thống AI Giải Đề & Chấm Đối Soát Đề Thi Tin Học THPT (2025 – 2026)
+# Hệ Thống AI Giải Đề & Chấm Đối Soát Đề Thi Tin Học THPT (2025 – 2026)
 
 Hệ thống ứng dụng **Mô hình ngôn ngữ lớn đa phương thức (Google Gemini 3.8 Flash & Gemini 3.1 Pro)** kết hợp thư viện xử lý tài liệu **pdfplumber** và cơ sở dữ liệu đám mây **MongoDB Atlas** nhằm tự động hóa quy trình tiếp nhận đề thi PDF, điều phối suy luận 2 pha, đối soát đáp án chuẩn và đánh giá hàng loạt (*Batch Processing*) cho đề thi môn Tin học tốt nghiệp THPT theo Chương trình GDPT 2018.
 
 ---
 
-## 🌟 Tính Năng Chính
+## Tính Năng Chính
 
 - **Kiến trúc phân tầng (Modular 3-Tier):** Mã nguồn được phân tách rõ ràng thành tầng giao diện (`views/`), tầng xử lý nghiệp vụ & điều phối suy luận (`core/`) và tầng lưu trữ dữ liệu (`MongoDB Atlas`).
 - **Chiến lược điều phối suy luận 2 Pha & Tự phục hồi có mục tiêu:** Phân tách quá trình giải 24 câu trắc nghiệm nhiều lựa chọn (Phần I) và 6 câu trắc nghiệm Đúng/Sai – 24 ý khẳng định (Phần II), kết hợp cơ chế cưỡng chế lược đồ JSON (`TypedDict Schema`) và truy vấn bù tự động (*Targeted Recovery*).
@@ -15,7 +15,7 @@ Hệ thống ứng dụng **Mô hình ngôn ngữ lớn đa phương thức (Goo
 
 ---
 
-## 📁 Cấu Trúc Thư Mục Dự Án
+## Cấu Trúc Thư Mục Dự Án
 
 ```text
 chatbotAI/
@@ -41,7 +41,7 @@ chatbotAI/
 
 ---
 
-## ⚙️ Yêu Cầu Môi Trường
+## Yêu Cầu Môi Trường
 
 - **Python:** Phiên bản `>= 3.10`
 - **Google Gemini API Key:** Cấp từ [Google AI Studio](https://aistudio.google.com/)
@@ -49,7 +49,7 @@ chatbotAI/
 
 ---
 
-## 🚀 Hướng Dẫn Cài Đặt & Chạy Ứng Dụng
+## Hướng Dẫn Cài Đặt & Chạy Ứng Dụng
 
 ### Bước 1: Khởi tạo môi trường ảo & cài đặt thư viện
 
