@@ -123,9 +123,14 @@ st.set_page_config(
 # =============================================================================
 st.markdown("""
 <style>
-    /* 1. Ẩn nút Deploy góc trên bên phải */
-    .stDeployButton, [data-testid="stDeployButton"] {
+    /* 1. Ẩn nút Deploy góc trên bên phải (hỗ trợ mọi phiên bản Streamlit) */
+    .stDeployButton,
+    .stAppDeployButton,
+    [data-testid="stDeployButton"],
+    [data-testid="stAppDeployButton"],
+    [data-testid="stToolbarActionButton"] {
         display: none !important;
+        visibility: hidden !important;
     }
     /* 2. Giữ menu 3 chấm (MainMenu) để người dùng có thể mở Settings đổi Theme Sáng/Tối khi cần */
     #MainMenu, [data-testid="stMainMenu"] {
@@ -227,15 +232,8 @@ def main():
                 else:
                     st.error(msg_del)
 
-        st.markdown("---")
-        st.subheader(":material/science: Chế Độ Kiểm Thử")
-        mock_mode = st.checkbox(
-            "Chế độ Mô Phỏng (0 Token API)",
-            value=False,
-            help="Chạy thử nghiệm toàn bộ giao diện chấm thi và lịch sử mà KHÔNG gọi Gemini API và KHÔNG tốn token."
-        )
-        if mock_mode:
-            st.warning("Chế độ Mô phỏng đang BẬT (0 token).")
+        # Ẩn Chế độ Kiểm Thử trên giao diện chính thức (mặc định tắt Mock Mode)
+        mock_mode = False
 
         st.markdown("---")
         st.subheader(":material/palette: Giao Diện Hiển Thị")
@@ -253,7 +251,7 @@ def main():
         if _light_mode != _is_light:
             os.makedirs(os.path.dirname(_config_path), exist_ok=True)
             with open(_config_path, "w", encoding="utf-8") as _f:
-                _f.write(f'[theme]\nbase = "{_target_theme}"\n')
+                _f.write(f'[client]\ntoolbarMode = "minimal"\n\n[theme]\nbase = "{_target_theme}"\n')
             st.toast(f"Đã chuyển sang chế độ {'Sáng' if _light_mode else 'Tối'}! Nhấn F5 nếu bảng chưa đổi màu.")
             st.rerun()
 
