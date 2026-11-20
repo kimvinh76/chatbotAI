@@ -419,7 +419,7 @@ def _norm_p2(items):
     return out
 
 
-def _ask_subset(model_name, schema, prompt, text, pdf_bytes, temperature):
+def _ask_subset(model_name, schema, prompt, text, pdf_bytes, temperature, step_label="Vá câu thiếu"):
     """Gọi AI cho 1 tập con câu hỏi (prompt ngắn, tập trung)."""
     contents = []
     if pdf_bytes:
@@ -427,7 +427,7 @@ def _ask_subset(model_name, schema, prompt, text, pdf_bytes, temperature):
     else:
         prompt += f"\n\n--- NỘI DUNG ĐỀ THI ---\n{text}"
     contents.append(prompt)
-    return _generate_json(model_name, schema, contents, "Vá câu thiếu", temperature)
+    return _generate_json(model_name, schema, contents, step_label, temperature)
 
 
 def fill_missing_answers(api_key, result, text, pdf_bytes, model_name, max_rounds=2):
@@ -446,7 +446,10 @@ def fill_missing_answers(api_key, result, text, pdf_bytes, model_name, max_round
             try:
                 prompt = (f"Giải các câu PHẦN I sau: {', '.join(map(str, miss1))}. "
                           f"Trả về cau_hoi đúng số gốc, dap_an là A/B/C/D và giải thích dưới 20 từ bám sát đề thi.")
-                got = _ask_subset(model_name, BaiGiaiPhan1, prompt, text, pdf_bytes, temp)
+                got = _ask_subset(
+                    model_name, BaiGiaiPhan1, prompt, text, pdf_bytes, temp,
+                    step_label=f"Vá câu thiếu (P1: {', '.join(map(str, miss1))})"
+                )
                 for it in _norm_p1(got.get("phan_1")).items():
                     if it[0] in miss1:
                         p1[it[0]] = it[1]
@@ -461,7 +464,10 @@ def fill_missing_answers(api_key, result, text, pdf_bytes, model_name, max_round
                 prompt = (f"Giải các câu PHẦN II sau: {targets}. Mỗi câu đủ 4 ý a, b, c, d.\n"
                           f"Với mỗi ý y_a, y_b, y_c, y_d: điền dap_an là 'Đúng' hoặc 'Sai' và BẮT BUỘC điền giai_thich dưới 25 từ bám sát đề thi. "
                           f"Trả về Schema BaiGiaiPhan2.")
-                got = _ask_subset(model_name, BaiGiaiPhan2, prompt, text, pdf_bytes, temp)
+                got = _ask_subset(
+                    model_name, BaiGiaiPhan2, prompt, text, pdf_bytes, temp,
+                    step_label=f"Vá câu thiếu (P2: {', '.join(map(str, miss2))})"
+                )
                 items = [_flatten_p2_item(it) for it in (got.get("phan_2") or []) if isinstance(it, dict)]
                 for i, it in enumerate(items):
                     try:

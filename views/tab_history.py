@@ -127,6 +127,18 @@ def render_tab_history(mongo_uri: str):
         # Tự động tính điểm chuẩn theo quy chế Bộ GD&ĐT từ chi tiết đối sánh có sẵn
         m_khmt, m_thud, _, _ = calculate_moet_scores(edoc.get("chi_tiet_doi_sanh", []))
 
+        # Thống kê số lượt gọi API & trạng thái gọi bù câu thiếu từ nhật ký chan_doan_token
+        chan_doan = (edoc.get("bai_lam_ai") or {}).get("chan_doan_token") or []
+        if chan_doan:
+            bu_logs = [x for x in chan_doan if "Vá" in str(x.get("luot", ""))]
+            if bu_logs:
+                bu_tok = sum(int(x.get("token_ra", 0) or 0) for x in bu_logs)
+                bu_note = f"{len(chan_doan)} lượt (Gọi bù: {bu_tok} tok)"
+            else:
+                bu_note = f"{len(chan_doan)} lượt (Không bù)"
+        else:
+            bu_note = "-"
+
         hist_summaries.append({
             "Mã Đề": edoc.get("ma_de"),
             "Năm Thi": edoc.get("nam_thi", "-"),
@@ -140,6 +152,7 @@ def render_tab_history(mongo_uri: str):
             "P1 Trắc nghiệm": f"{edoc.get('thong_ke_phan_1', {}).get('so_cau_dung')}/{edoc.get('thong_ke_phan_1', {}).get('tong_so_cau')}",
             "P2 Đúng/Sai": f"{edoc.get('thong_ke_phan_2', {}).get('so_y_dung')}/{edoc.get('thong_ke_phan_2', {}).get('tong_so_y')}",
             "Model AI": str(edoc.get("model_ai", "-")).replace("-preview", ""),
+            "Lượt API / Gọi bù": bu_note,
             "Thời gian (s)": lat,
             "Token Vào": tin,
             "Token Ra": tout,
